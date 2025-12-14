@@ -1,0 +1,296 @@
+/**
+ * AccuPOS Sync - Admin Panel Styles
+ * 
+ * Стили для панели мониторинга транзакций
+ * 
+ * @author    Aleksei Nekrasov <info@impserver.ru>
+ * @copyright 2025 ООО «Свобода» / impserver.ru
+ * @version   1.0.0
+ */
+
+/* ========================================
+   Статистические карточки
+   ======================================== */
+
+.accupos-stat-card {
+    background: #fff;
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    padding: 20px;
+    text-align: center;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.accupos-stat-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.accupos-stat-card h3 {
+    margin: 0 0 10px 0;
+    font-size: 36px;
+    font-weight: 600;
+}
+
+.accupos-stat-card p {
+    margin: 0;
+    color: #6c757d;
+    font-size: 14px;
+}
+
+.accupos-stat-card small {
+    color: #999;
+    font-size: 12px;
+}
+
+/* ========================================
+   Статусные бейджи
+   ======================================== */
+
+.accupos-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.accupos-badge-success {
+    background-color: #5cb85c;
+    color: #fff;
+}
+
+.accupos-badge-error {
+    background-color: #d9534f;
+    color: #fff;
+}
+
+.accupos-badge-warning {
+    background-color: #f0ad4e;
+    color: #fff;
+}
+
+.accupos-badge-skipped {
+    background-color: #5bc0de;
+    color: #fff;
+}
+
+/* ========================================
+   Таблица транзакций
+   ======================================== */
+
+.accupos-transactions-table {
+    background: #fff;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.accupos-transactions-table thead {
+    background-color: #f8f9fa;
+    border-bottom: 2px solid #dee2e6;
+}
+
+.accupos-transactions-table thead th {
+    padding: 12px 8px;
+    font-weight: 600;
+    font-size: 13px;
+    color: #495057;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.accupos-transactions-table tbody td {
+    padding: 10px 8px;
+    vertical-align: middle;
+    font-size: 13px;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.accupos-transactions-table tbody tr:hover {
+    background-color: #f8f9fa;
+}
+
+.accupos-transactions-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+/* SKU код */
+.accupos-sku {
+    font-family: 'Courier New', monospace;
+    background-color: #f5f5f5;
+    padding: 3px 6px;
+    border-radius: 3px;
+    font-size: 12px;
+    border: 1px solid #e0e0e0;
+}
+
+/* Количество */
+.accupos-qty-positive {
+    color: #28a745;
+    font-weight: 600;
+}
+
+.accupos-qty-negative {
+    color: #dc3545;
+    font-weight: 600;
+}
+
+/* ========================================
+   Фильтры
+   ======================================== */
+
+.accupos-filters {
+    margin-bottom: 20px;
+    padding: 15px;
+    background: #f8f9fa;
+    border-radius: 4px;
+    border: 1px solid #dee2e6;
+}
+
+.accupos-filter-btn {
+    margin-right: 5px;
+    margin-bottom: 5px;
+}
+
+/* ========================================
+   Алерты и сообщения
+   ======================================== */
+
+.accupos-alert {
+    padding: 15px;
+    border-radius: 4px;
+    margin-bottom: 15px;
+    border: 1px solid transparent;
+}
+
+.accupos-alert-info {
+    background-color: #d9edf7;
+    border-color: #bce8f1;
+    color: #31708f;
+}
+
+.accupos-alert-success {
+    background-color: #dff0d8;
+    border-color: #d6e9c6;
+    color: #3c763d;
+}
+
+.accupos-alert-warning {
+    background-color: #fcf8e3;
+    border-color: #faebcc;
+    color: #8a6d3b;
+}
+
+.accupos-alert-danger {
+    background-color: #f2dede;
+    border-color: #ebccd1;
+    color: #a94442;
+}
+
+/* ========================================
+   Пагинация
+   ======================================== */
+
+.accupos-pagination {
+    text-align: center;
+    margin-top: 20px;
+}
+
+.accupos-pagination .pagination {
+    margin: 0;
+}
+
+.accupos-pagination .pagination > li > a {
+    color: #007bff;
+    border-color: #dee2e6;
+}
+
+.accupos-pagination .pagination > li.active > a {
+    background-color: #007bff;
+    border-color: #007bff;
+    color: #fff;
+}
+
+.accupos-pagination .pagination > li > a:hover {
+    background-color: #e9ecef;
+    border-color: #dee2e6;
+}
+
+/* ========================================
+   Анимация загрузки
+   ======================================== */
+
+.accupos-loading {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid rgba(0, 0, 0, 0.1);
+    border-radius: 50%;
+    border-top-color: #007bff;
+    animation: accupos-spin 1s ease-in-out infinite;
+}
+
+@keyframes accupos-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* ========================================
+   Адаптивность
+   ======================================== */
+
+@media (max-width: 768px) {
+    .accupos-stat-card h3 {
+        font-size: 28px;
+    }
+    
+    .accupos-transactions-table {
+        font-size: 12px;
+    }
+    
+    .accupos-transactions-table thead th,
+    .accupos-transactions-table tbody td {
+        padding: 8px 4px;
+    }
+    
+    .accupos-filter-btn {
+        width: 100%;
+        margin-right: 0;
+    }
+}
+
+/* ========================================
+   Утилиты
+   ======================================== */
+
+.accupos-text-muted {
+    color: #6c757d;
+}
+
+.accupos-text-center {
+    text-align: center;
+}
+
+.accupos-mb-0 {
+    margin-bottom: 0 !important;
+}
+
+.accupos-mb-1 {
+    margin-bottom: 0.5rem !important;
+}
+
+.accupos-mb-2 {
+    margin-bottom: 1rem !important;
+}
+
+.accupos-mt-2 {
+    margin-top: 1rem !important;
+}
+
+.accupos-mt-3 {
+    margin-top: 1.5rem !important;
+}
+

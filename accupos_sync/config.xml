@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<module>
+    <name>accupos_sync</name>
+    <displayName><![CDATA[AccuPOS Sync]]></displayName>
+    <version><![CDATA[0.1.0]]></version>
+    <description><![CDATA[Синхронизация продаж AccuPOS с PrestaShop для автоматического обновления остатков товаров по складам]]></description>
+    <author><![CDATA[Aleksei Nekrasov (impserver.ru)]]></author>
+    <tab><![CDATA[administration]]></tab>
+    <confirmUninstall><![CDATA[Вы уверены, что хотите удалить модуль AccuPOS Sync? Все данные синхронизации будут удалены.]]></confirmUninstall>
+    <is_configurable>1</is_configurable>
+    <need_instance>1</need_instance>
+    <limited_countries></limited_countries>
+    <ps_versions_compliancy>
+        <min>1.7.8.0</min>
+        <max>9.99.99</max>
+    </ps_versions_compliancy>
+</module>
+
