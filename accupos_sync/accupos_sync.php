@@ -64,6 +64,11 @@ class AccuPos_Sync extends Module
             return false;
         }
 
+        // Гарантируем корректные уникальные индексы для защиты от дублей
+        if (!$this->ensureAccuposTransactionIndex()) {
+            return false;
+        }
+
         // Создание директорий для логов
         if (!$this->createLogDirectories()) {
             return false;
@@ -76,6 +81,45 @@ class AccuPos_Sync extends Module
         // $this->registerHook('actionOrderStatusUpdate');
 
         return true;
+    }
+
+    /**
+     * Обновление индексов таблицы accupos_transactions для защиты от дублей
+     *
+     * @return bool
+     */
+    private function ensureAccuposTransactionIndex()
+    {
+        $table = _DB_PREFIX_ . 'accupos_transactions';
+
+        try {
+            // Удаляем устаревший уникальный индекс по одному полю, если он есть
+            $oldIndex = Db::getInstance()->executeS("SHOW INDEX FROM `" . bqSQL($table) . "` WHERE Key_name = 'accupos_transaction_id'");
+
+            if (!empty($oldIndex)) {
+                Db::getInstance()->execute('ALTER TABLE `' . bqSQL($table) . '` DROP INDEX `accupos_transaction_id`');
+            }
+
+            // Создаём уникальный индекс по (transaction_id, terminal, sku)
+            $newIndex = Db::getInstance()->executeS("SHOW INDEX FROM `" . bqSQL($table) . "` WHERE Key_name = 'accupos_txn_loc_sku'");
+
+            if (empty($newIndex)) {
+                Db::getInstance()->execute(
+                    'ALTER TABLE `' . bqSQL($table) . '` ADD UNIQUE KEY `accupos_txn_loc_sku` (`accupos_transaction_id`,`terminal_id`,`sku`)'
+                );
+            }
+
+            return true;
+        } catch (Exception $e) {
+            PrestaShopLogger::addLog(
+                'AccuPOS Sync: Ошибка обновления индексов accupos_transactions - ' . $e->getMessage(),
+                4,
+                null,
+                'AccuPos_Sync'
+            );
+
+            return false;
+        }
     }
 
     /**
@@ -155,7 +199,8 @@ class AccuPos_Sync extends Module
             `date_sale` DATETIME NOT NULL,
             `date_processed` DATETIME NOT NULL,
             PRIMARY KEY (`id`),
-            UNIQUE KEY `accupos_transaction_id` (`accupos_transaction_id`),
+            UNIQUE KEY `accupos_txn_loc_sku` (`accupos_transaction_id`, `terminal_id`, `sku`),
+            KEY `accupos_transaction_id` (`accupos_transaction_id`),
             KEY `terminal_id` (`terminal_id`),
             KEY `sku` (`sku`),
             KEY `status` (`status`),

@@ -124,8 +124,9 @@ class AccuPosSync
             // Шаг 1: Подключение к AccuPOS
             $this->accuposDb->connect();
 
-            // Шаг 2: Определение последней обработанной транзакции
+            // Шаг 2: Определение последней обработанной транзакции и даты
             $lastTransactionId = $this->getLastTransactionId();
+            $lastSyncDate = $this->getLastSyncDate();
 
             // Шаг 3: Получение окна синхронизации
             if ($this->customSyncStartDate) {
@@ -137,8 +138,16 @@ class AccuPosSync
                 $syncStartDate = date('Y-m-d H:i:s', strtotime('-' . $syncWindowDays . ' days'));
             }
 
+            // Используем максимальную дату между пользовательским окном и последней успешной синхронизацией
+            if ($lastSyncDate) {
+                $syncStartDateTimestamp = strtotime($syncStartDate);
+                $lastSyncTimestamp = strtotime($lastSyncDate);
+
+                $syncStartDate = date('Y-m-d H:i:s', max($syncStartDateTimestamp, $lastSyncTimestamp));
+            }
+
             // Шаг 4: Получение новых транзакций из AccuPOS
-            $transactions = $this->fetchAccuPosTransactions($lastTransactionId, $syncStartDate);
+            $transactions = $this->fetchAccuPosTransactions($lastTransactionId, $syncStartDate, $lastSyncDate);
 
             if (empty($transactions)) {
                 $result['success'] = true;
@@ -205,13 +214,13 @@ class AccuPosSync
      * @return array Транзакции
      * @throws Exception
      */
-    private function fetchAccuPosTransactions($lastTransactionId, $syncStartDate)
+    private function fetchAccuPosTransactions($lastTransactionId, $syncStartDate, $lastSyncDate = null)
     {
         // Реальный запрос к AccuPOS на основе изученной схемы БД
         // Таблицы: apcshead (заголовки заказов), apcsitem (позиции заказов)
-        
+
         $query = "
-            SELECT 
+            SELECT
                 i.Id AS transaction_id,
                 i.ItemID AS sku,
                 i.Quantity AS qty,
@@ -220,18 +229,24 @@ class AccuPosSync
                 h.Key AS order_key,
                 h.InvNum AS invoice_num
             FROM apcsitem i
-            INNER JOIN apcshead h ON i.HeadKey = h.Key
-            WHERE h.DateInvoiced >= :sync_start_date
+            INNER JOIN apcshead h ON i.HeadKey = h.Key AND i.LocationCode = h.LocationCode
+            WHERE h.DateInvoiced > :sync_start_date
                 AND h.DateInvoiced IS NOT NULL
                 AND (h.Status IS NULL OR h.Status != 'Void')
                 AND (i.Status IS NULL OR i.Status != 'V')
                 AND i.Hidden = 0
-                AND i.Quantity > 0
+                AND i.Quantity <> 0
                 AND i.isChoice = 0
         ";
 
         $params = array();
         $params[':sync_start_date'] = $syncStartDate;
+
+        // Дополнительная защита от повторной обработки по дате
+        if ($lastSyncDate) {
+            $query .= " AND h.DateInvoiced > :last_sync_date";
+            $params[':last_sync_date'] = $lastSyncDate;
+        }
 
         // Фильтр по ID транзакции (для пагинации)
         if ($lastTransactionId) {
@@ -312,9 +327,9 @@ class AccuPosSync
             }
 
             // Шаг 1: Проверка на дубликат
-            if ($this->isDuplicateTransaction($transactionId)) {
+            if ($this->isDuplicateTransaction($transactionId, $location, $sku)) {
                 $result['status'] = 'skipped';
-                $result['message'] = 'Duplicate transaction';
+                $result['message'] = 'Duplicate transaction for location/SKU';
                 return $result;
             }
 
@@ -419,29 +434,20 @@ class AccuPosSync
 
     /**
      * Проверка, является ли транзакция дубликатом
-     * 
+     *
      * @param string $transactionId ID транзакции AccuPOS
+     * @param string $location LocationCode/терминал
+     * @param string $sku SKU строки
      * @return bool true если дубликат
      */
-    private function isDuplicateTransaction($transactionId)
+    private function isDuplicateTransaction($transactionId, $location, $sku)
     {
-        // ЭКСПЕРТНОЕ РЕШЕНИЕ: проверяем ТОЛЬКО успешно обработанные транзакции
-        // если транзакция имеет статус 'error', она НЕ является дубликатом!
-        
-        // Используем INFORMATION_SCHEMA для поиска правильной таблицы
-        $tables = Db::getInstance()->executeS("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES 
-                                               WHERE TABLE_SCHEMA = DATABASE() 
-                                               AND TABLE_NAME LIKE '%accupos\_transactions%'");
-        
-        if (empty($tables)) {
-            return false; // Таблицу не нашли, не дубликат
-        }
-        
-        $transactionTable = $tables[0]['TABLE_NAME'];
-        
-        // Проверяем только УСПЕШНЫЕ транзакции (status = 'success')
+        // Проверяем только УСПЕШНЫЕ транзакции (status = 'success') с учётом склада и SKU
         $exists = Db::getInstance()->getValue(
-            'SELECT id FROM `' . $transactionTable . '` WHERE accupos_transaction_id = ' . (int)$transactionId . ' AND status = \'success\''
+            'SELECT id FROM `' . _DB_PREFIX_ . 'accupos_transactions` WHERE accupos_transaction_id = ' . (int)$transactionId .
+            ' AND terminal_id = \'' . pSQL($location) . '\'' .
+            ' AND sku = \'' . pSQL($sku) . '\'' .
+            " AND status = 'success'"
         );
 
         return (bool)$exists;
@@ -499,53 +505,45 @@ class AccuPosSync
     {
         try {
             // Проверка товара (минимальная валидация)
-            if (!$productId || !$warehouseId) {
+            if (!$productId || !$warehouseId || $qty == 0) {
                 return false;
-            }
-            
-            // Списание товара (отрицательное значение)
-            $quantityDelta = -(int)$qty;
-            
-            // Кэш ключ для id_stock
-            $stockCacheKey = $productId . '_' . $warehouseId;
-            
-            // 1. Получение id_stock с кэшем
-            if (!isset($this->stockCache[$stockCacheKey])) {
-                // ПРОСТОЕ И НАДЕЖНОЕ РЕШЕНИЕ: используем явное имя таблицы с префиксом
-                // БЕЗ LIMIT 1 (getValue() уже возвращает одно значение)
-                $query = 'SELECT id_stock FROM `' . _DB_PREFIX_ . 'stock` WHERE id_product = ' . (int)$productId . ' AND id_warehouse = ' . (int)$warehouseId . ' AND id_product_attribute = 0';
-                
-                $idStock = Db::getInstance()->getValue($query);
-                
-                $this->stockCache[$stockCacheKey] = $idStock;
-                
-            } else {
-                $idStock = $this->stockCache[$stockCacheKey];
-            }
-            
-            if (!$idStock) {
-                return false;
-            }
-            
-            // 2. Обновление в ps_stock за один запрос (используем прямой UPDATE с математикой)
-            $updateQuery = 'UPDATE `' . _DB_PREFIX_ . 'stock` SET physical_quantity = GREATEST(0, physical_quantity + ' . (int)$quantityDelta . ') WHERE id_stock = ' . (int)$idStock;
-            $updateResult = Db::getInstance()->execute($updateQuery);
-            
-            // Проверка результата UPDATE
-            if (!$updateResult) {
-                return false;
-            }
-            
-            // 3. Создание записи о движении товара (передаём дату продажи)
-            $mvtResult = $this->createStockMovement($productId, $warehouseId, $quantityDelta, $idStock, $dateSale);
-            
-            if (!$mvtResult) {
-                $this->logger->logToFile('WARN', 'updateProductStock: movement creation failed for product=' . $productId . ', warehouse=' . $warehouseId);
             }
 
-            return (bool)$updateResult;
-            
+            $reasonId = 13; // Причина движения "AccuPOS Sync"
+
+            // Используем стандартный менеджер запасов PrestaShop для создания движений и обновления остатков
+            $stockManager = StockManagerFactory::getManager();
+
+            if (!$stockManager) {
+                return false;
+            }
+
+            $quantity = abs((float)$qty);
+
+            if ($qty > 0) {
+                // Продажа: списание
+                $result = $stockManager->removeProduct($productId, 0, $warehouseId, $quantity, $reasonId);
+            } else {
+                // Возврат: приход
+                $result = $stockManager->addProduct($productId, 0, $warehouseId, $quantity, $reasonId);
+            }
+
+            // Синхронизация stock_available для витрины
+            StockAvailable::synchronize($productId);
+
+            // Привязка движения к складу в Prestatill, если доступно
+            if (class_exists('PrestatillStockMvt') && $warehouseId > 0) {
+                $lastMvt = PrestatillStockMvt::getLastStockMvtForProduct($productId, 0);
+
+                if ($lastMvt && isset($lastMvt['id_stock_mvt'])) {
+                    PrestatillStockMvt::addIdWarehouseToMvt((int)$lastMvt['id_stock_mvt'], (int)$warehouseId);
+                }
+            }
+
+            return (bool)$result;
+
         } catch (Exception $e) {
+            $this->logger->logToFile('ERROR', 'updateProductStock failed: ' . $e->getMessage());
             return false;
         }
     }
@@ -575,6 +573,20 @@ class AccuPosSync
         }
         
         return $lastId ? (int)$lastId : null;
+    }
+
+    /**
+     * Получение даты последней успешной продажи
+     *
+     * @return string|null
+     */
+    private function getLastSyncDate()
+    {
+        $lastDate = Db::getInstance()->getValue(
+            'SELECT MAX(date_sale) FROM ' . _DB_PREFIX_ . "accupos_transactions WHERE status = 'success'"
+        );
+
+        return $lastDate ? $lastDate : null;
     }
 
     /**
