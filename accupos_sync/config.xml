@@ -2,7 +2,7 @@
 <module>
     <name>accupos_sync</name>
     <displayName><![CDATA[AccuPOS Sync]]></displayName>
-    <version><![CDATA[0.1.0]]></version>
+    <version><![CDATA[0.1.1]]></version>
     <description><![CDATA[Синхронизация продаж AccuPOS с PrestaShop для автоматического обновления остатков товаров по складам]]></description>
     <author><![CDATA[Aleksei Nekrasov (impserver.ru)]]></author>
     <tab><![CDATA[administration]]></tab>

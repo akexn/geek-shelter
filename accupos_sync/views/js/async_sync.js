@@ -25,6 +25,7 @@ function startSync() {
         statusDiv.innerHTML = '<div class="alert alert-info">⏳ Пожалуйста, подождите. Синхронизация может занять несколько минут...</div>';
     }
 
+    // На сервере модуль находится в /modules/accupos_sync/
     const ajaxUrl = '/modules/accupos_sync/ajax_sync.php';
 
     fetch(ajaxUrl, {

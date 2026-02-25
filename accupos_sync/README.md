@@ -82,24 +82,23 @@ VALUES
 
 ### Шаг 5: Настройка CRON (опционально)
 
-Для автоматической ночной синхронизации добавьте в crontab:
+Для автоматической синхронизации рекомендуется использовать **dispatcher**:
+- В `crontab` ставим **две строки**, которые запускаются каждую минуту
+- Реальная периодичность и режим выбираются в админке модуля (CRON расписание)
 
 ```bash
 # SSH на сервер
-ssh root@dev.geek-shelter.com
+ssh root@your-server
 
 # Редактирование crontab
 crontab -e
 
-# Добавить строку (синхронизация каждый день в 02:00)
-0 2 * * * /usr/bin/php /var/www/dev.geek-shelter.com/modules/accupos_sync/cron/sync.php >> /var/www/dev.geek-shelter.com/var/logs/accupos/cron.log 2>&1
+# Добавить строки (PrestaShop root на DO: /var/www/html)
+* * * * * /usr/bin/php7.4 /var/www/html/modules/accupos_sync/cron/dispatcher.php >> /var/www/html/var/logs/cron/accupos_cron.log 2>&1
+* * * * * /usr/bin/php7.4 /var/www/html/modules/accupos_sync/cron/async_worker.php >> /var/www/html/var/logs/accupos_async_worker.log 2>&1
 ```
 
-Альтернативный вариант через HTTP (с токеном):
-
-```bash
-0 2 * * * curl "https://dev.geek-shelter.com/modules/accupos_sync/cron/sync.php?token=YOUR_TOKEN" >> /var/logs/accupos/cron.log 2>&1
-```
+> Важно: `async_worker.php` нужен для “принудительной синхронизации” из админки (асинхронно).
 
 ## 📊 Использование
 
@@ -111,13 +110,16 @@ crontab -e
 
 ### Автоматическая синхронизация (CRON)
 
-Если настроен CRON, синхронизация будет выполняться автоматически в указанное время.
+Если настроен CRON, синхронизация будет выполняться автоматически:
+- **Режим “Текущий день”**: каждые N минут (N задаётся в настройке интервала)
+- **Режим “Предыдущий день (legacy)”**: 1 раз в сутки по времени `ACCUPOS_CRON_TIME` (HH:MM)
 
 Проверить логи:
 
 ```bash
-tail -f /var/www/dev.geek-shelter.com/var/logs/accupos/YYYY-MM-DD.log
-tail -f /var/www/dev.geek-shelter.com/var/logs/accupos/cron.log
+tail -f /var/www/html/var/logs/accupos/YYYY-MM-DD.log
+tail -f /var/www/html/var/logs/cron/accupos_cron.log
+tail -f /var/www/html/var/logs/accupos_async_worker.log
 ```
 
 ### Просмотр логов синхронизации
@@ -142,13 +144,13 @@ GROUP BY sku;
 
 ```bash
 # Логи за сегодня
-cat /var/www/dev.geek-shelter.com/var/logs/accupos/$(date +%Y-%m-%d).log
+cat /var/www/html/var/logs/accupos/$(date +%Y-%m-%d).log
 
 # Последние ошибки
-grep ERROR /var/www/dev.geek-shelter.com/var/logs/accupos/*.log | tail -20
+grep ERROR /var/www/html/var/logs/accupos/*.log | tail -20
 
 # Unmapped SKU
-grep UNMAPPED_SKU /var/www/dev.geek-shelter.com/var/logs/accupos/*.log
+grep UNMAPPED_SKU /var/www/html/var/logs/accupos/*.log
 ```
 
 ## 🔧 Архитектура

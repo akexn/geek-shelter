@@ -6,20 +6,11 @@
 
 error_log("[CRON] Started at " . date('Y-m-d H:i:s'));
 
-// Подключение конфига
-require_once '/var/www/dev.geek-shelter.com/config/config.inc.php';
-error_log("[CRON] Config loaded");
-
-// Подключение критических классов
-require_once '/var/www/dev.geek-shelter.com/classes/db/Db.php';
-require_once '/var/www/dev.geek-shelter.com/classes/Tools.php';
-require_once '/var/www/dev.geek-shelter.com/classes/Configuration.php';
-require_once '/var/www/dev.geek-shelter.com/classes/ObjectModel.php';
-error_log("[CRON] Core classes loaded");
-
-// Инициализация БД
-$db = Db::getInstance();
-error_log("[CRON] Database connected");
+// Определяем корень PrestaShop (…/modules/accupos_sync/cron -> …/)
+$psRoot = dirname(__DIR__, 3);
+require_once $psRoot . '/config/config.inc.php';
+require_once $psRoot . '/init.php';
+error_log("[CRON] PrestaShop bootstrap loaded");
 
 // Проверка конфига - теперь Configuration работает!
 $cronEnabled = Configuration::get('ACCUPOS_ENABLE_CRON');
@@ -31,8 +22,9 @@ if (!$cronEnabled) {
 }
 
 // Подключение модуля
-require_once '/var/www/dev.geek-shelter.com/modules/accupos_sync/accupos_sync.php';
-error_log("[CRON] AccuPOS module loaded");
+$moduleFile = dirname(__DIR__) . '/accupos_sync.php';
+require_once $moduleFile;
+error_log("[CRON] AccuPOS module loaded: " . $moduleFile);
 
 try {
     $startTime = microtime(true);

@@ -6,13 +6,16 @@
 
 error_log("[CRON] Started at " . date('Y-m-d H:i:s'));
 
+// Определяем корень PrestaShop (…/modules/accupos_sync/cron -> …/)
+$psRoot = dirname(__DIR__, 3);
+
 // Подключение только конфига
-require_once '/var/www/dev.geek-shelter.com/config/config.inc.php';
+require_once $psRoot . '/config/config.inc.php';
 error_log("[CRON] Config loaded");
 
 // Подключение классов Db и Tools без init
-require_once '/var/www/dev.geek-shelter.com/classes/db/Db.php';
-require_once '/var/www/dev.geek-shelter.com/classes/Tools.php';
+require_once $psRoot . '/classes/db/Db.php';
+require_once $psRoot . '/classes/Tools.php';
 error_log("[CRON] Core classes loaded");
 
 // Инициализация БД
@@ -29,8 +32,9 @@ if (!$cronEnabled) {
 }
 
 // Подключение модуля
-require_once '/var/www/dev.geek-shelter.com/modules/accupos_sync/accupos_sync.php';
-error_log("[CRON] AccuPOS module loaded");
+$moduleFile = dirname(__DIR__) . '/accupos_sync.php';
+require_once $moduleFile;
+error_log("[CRON] AccuPOS module loaded: " . $moduleFile);
 
 try {
     $startTime = microtime(true);

@@ -34,7 +34,7 @@ class AccuPos_Sync extends Module
     {
         $this->name = 'accupos_sync';
         $this->tab = 'administration';
-        $this->version = '0.1.0';
+        $this->version = '0.1.1';
         $this->author = 'Aleksei Nekrasov (impserver.ru)';
         $this->need_instance = 1;
         $this->ps_versions_compliancy = array('min' => '1.7.8.0', 'max' => '9.99.99');
@@ -64,18 +64,186 @@ class AccuPos_Sync extends Module
             return false;
         }
 
+        // Гарантируем корректные уникальные индексы для защиты от дублей
+        if (!$this->ensureAccuposTransactionIndex()) {
+            return false;
+        }
+
         // Создание директорий для логов
         if (!$this->createLogDirectories()) {
+            return false;
+        }
+
+        // Создание сотрудника AccuPOS Sync
+        if (!$this->createAccuPosEmployee()) {
+            return false;
+        }
+
+        // Создание причины движения "AccuPOS Sync"
+        if (!$this->createStockMovementReason()) {
             return false;
         }
 
         // Установка значений по умолчанию
         $this->setDefaultConfiguration();
 
+        // Создание вкладки в меню администратора
+        if (!$this->installTab()) {
+            return false;
+        }
+
         // Регистрация hooks (если потребуются в будущем)
         // $this->registerHook('actionOrderStatusUpdate');
 
         return true;
+    }
+
+    /**
+     * Создание вкладки в меню администратора
+     * 
+     * @return bool
+     */
+    private function installTab()
+    {
+        try {
+            // Проверяем, существует ли уже вкладка
+            $existingTab = Tab::getIdFromClassName('AdminAccuPosSync');
+            if ($existingTab) {
+                // Если вкладка уже существует — убедимся, что она находится на нужном уровне (на 1 уровень выше Modules)
+                $desiredParentId = (int)Tab::getIdFromClassName('IMPROVE');
+                if (!$desiredParentId) {
+                    $modulesTabId = (int)Tab::getIdFromClassName('AdminParentModulesSf');
+                    if ($modulesTabId) {
+                        $modulesTab = new Tab($modulesTabId);
+                        $desiredParentId = (int)$modulesTab->id_parent;
+                    }
+                }
+
+                if ($desiredParentId) {
+                    $tab = new Tab((int)$existingTab);
+                    if ((int)$tab->id_parent !== (int)$desiredParentId) {
+                        $tab->id_parent = (int)$desiredParentId;
+                        $tab->save();
+                    }
+                }
+
+                return true; // Вкладка уже существует
+            }
+
+            // Создаём новую вкладку
+            $tab = new Tab();
+            $tab->class_name = 'AdminAccuPosSync';
+            $tab->module = $this->name;
+            $tab->active = 1;
+            
+            // Родительская вкладка: IMPROVE (на уровень выше Modules)
+            $parentTabId = (int)Tab::getIdFromClassName('IMPROVE');
+            if (!$parentTabId) {
+                // Fallback: берём родителя AdminParentModulesSf
+                $modulesTabId = (int)Tab::getIdFromClassName('AdminParentModulesSf');
+                if ($modulesTabId) {
+                    $modulesTab = new Tab($modulesTabId);
+                    $parentTabId = (int)$modulesTab->id_parent; // IMPROVE
+                }
+            }
+            
+            if (!$parentTabId) {
+                // Fallback на Stock Management
+                $parentTabId = (int)Tab::getIdFromClassName('AdminStock');
+            }
+            if (!$parentTabId) {
+                // Fallback на Catalog
+                $parentTabId = (int)Tab::getIdFromClassName('AdminCatalog');
+            }
+            
+            $tab->id_parent = $parentTabId;
+            $tab->icon = 'sync'; // Material Design icon
+            
+            // Переводы названия вкладки
+            $languages = Language::getLanguages(false);
+            foreach ($languages as $lang) {
+                $tab->name[(int)$lang['id_lang']] = 'AccuPOS Sync';
+            }
+            
+            if ($tab->add()) {
+                PrestaShopLogger::addLog(
+                    'AccuPOS Sync: Вкладка меню создана',
+                    1,
+                    null,
+                    'AccuPos_Sync'
+                );
+                return true;
+            }
+            
+            return false;
+            
+        } catch (Exception $e) {
+            PrestaShopLogger::addLog(
+                'AccuPOS Sync: Ошибка создания вкладки меню - ' . $e->getMessage(),
+                3,
+                null,
+                'AccuPos_Sync'
+            );
+            return false;
+        }
+    }
+
+    /**
+     * Удаление вкладки из меню администратора
+     * 
+     * @return bool
+     */
+    private function uninstallTab()
+    {
+        try {
+            $tabId = (int)Tab::getIdFromClassName('AdminAccuPosSync');
+            if ($tabId) {
+                $tab = new Tab($tabId);
+                return $tab->delete();
+            }
+            return true;
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Обновление индексов таблицы accupos_transactions для защиты от дублей
+     *
+     * @return bool
+     */
+    private function ensureAccuposTransactionIndex()
+    {
+        $table = _DB_PREFIX_ . 'accupos_transactions';
+
+        try {
+            // Удаляем устаревший уникальный индекс по одному полю, если он есть
+            $oldIndex = Db::getInstance()->executeS("SHOW INDEX FROM `" . bqSQL($table) . "` WHERE Key_name = 'accupos_transaction_id'");
+
+            if (!empty($oldIndex)) {
+                Db::getInstance()->execute('ALTER TABLE `' . bqSQL($table) . '` DROP INDEX `accupos_transaction_id`');
+            }
+
+            // Создаём уникальный индекс по (transaction_id, terminal, sku)
+            $newIndex = Db::getInstance()->executeS("SHOW INDEX FROM `" . bqSQL($table) . "` WHERE Key_name = 'accupos_txn_loc_sku'");
+
+            if (empty($newIndex)) {
+                Db::getInstance()->execute(
+                    'ALTER TABLE `' . bqSQL($table) . '` ADD UNIQUE KEY `accupos_txn_loc_sku` (`accupos_transaction_id`,`terminal_id`,`sku`)'
+                );
+            }
+
+            return true;
+        } catch (Exception $e) {
+            PrestaShopLogger::addLog(
+                'AccuPOS Sync: Ошибка обновления индексов accupos_transactions - ' . $e->getMessage(),
+                4,
+                null,
+                'AccuPos_Sync'
+            );
+
+            return false;
+        }
     }
 
     /**
@@ -85,6 +253,9 @@ class AccuPos_Sync extends Module
      */
     public function uninstall()
     {
+        // Удаление вкладки из меню
+        $this->uninstallTab();
+
         // Удаление таблиц БД
         if (!$this->uninstallDb()) {
             return false;
@@ -148,20 +319,20 @@ class AccuPos_Sync extends Module
             `accupos_transaction_id` VARCHAR(128) NOT NULL,
             `terminal_id` VARCHAR(64) NOT NULL,
             `warehouse_id` INT(11) UNSIGNED DEFAULT NULL,
-            `sku` VARCHAR(64) NOT NULL,
+           `sku` VARCHAR(64) NOT NULL,
             `qty` DECIMAL(10,3) NOT NULL,
             `status` ENUM(\'success\',\'error\',\'skipped\') NOT NULL DEFAULT \'success\',
             `error_message` TEXT DEFAULT NULL,
             `date_sale` DATETIME NOT NULL,
             `date_processed` DATETIME NOT NULL,
             PRIMARY KEY (`id`),
-            UNIQUE KEY `accupos_transaction_id` (`accupos_transaction_id`),
+            UNIQUE KEY `accupos_txn_loc_sku` (`accupos_transaction_id`, `terminal_id`, `sku`),
+            KEY `accupos_transaction_id` (`accupos_transaction_id`),
             KEY `terminal_id` (`terminal_id`),
             KEY `sku` (`sku`),
             KEY `status` (`status`),
             KEY `date_sale` (`date_sale`)
         ) ENGINE=' . _MYSQL_ENGINE_ . ' DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci';
-
         // Таблица 4: Конфигурация модуля (зашифрованная)
         $sql[] = 'CREATE TABLE IF NOT EXISTS `' . _DB_PREFIX_ . 'accupos_config` (
             `id` INT(11) UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -243,14 +414,182 @@ class AccuPos_Sync extends Module
     }
 
     /**
+     * Создание сотрудника "AccuPOS Sync" для движений товара
+     * 
+     * @return bool
+     */
+    private function createAccuPosEmployee()
+    {
+        try {
+            // Проверяем, существует ли уже сотрудник
+            $existingEmployee = Db::getInstance()->getValue('
+                SELECT id_employee 
+                FROM ' . _DB_PREFIX_ . 'employee 
+                WHERE email = \'accupos@geek-shelter.com\'
+            ');
+
+            if ($existingEmployee) {
+                // Сотрудник уже существует - сохраняем его ID
+                Configuration::updateValue('ACCUPOS_EMPLOYEE_ID', (int)$existingEmployee);
+                
+                PrestaShopLogger::addLog(
+                    'AccuPOS Sync: Сотрудник AccuPOS Sync уже существует (ID=' . $existingEmployee . ')',
+                    1,
+                    null,
+                    'AccuPos_Sync'
+                );
+                
+                return true;
+            }
+
+            // Создаём нового сотрудника
+            $employee = new Employee();
+            $employee->firstname = 'AccuPOS';
+            $employee->lastname = 'Sync';
+            $employee->email = 'accupos@geek-shelter.com';
+            $employee->passwd = Tools::hash(_COOKIE_KEY_ . 'accupos_sync_' . time());
+            $employee->id_profile = 1; // SuperAdmin (нужен для создания движений)
+            $employee->active = 1;
+            $employee->id_lang = (int)Configuration::get('PS_LANG_DEFAULT');
+
+            if ($employee->add()) {
+                // Сохраняем ID в конфигурацию
+                Configuration::updateValue('ACCUPOS_EMPLOYEE_ID', (int)$employee->id);
+                
+                PrestaShopLogger::addLog(
+                    'AccuPOS Sync: Создан сотрудник AccuPOS Sync (ID=' . $employee->id . ')',
+                    1,
+                    null,
+                    'AccuPos_Sync'
+                );
+                
+                return true;
+            }
+
+            PrestaShopLogger::addLog(
+                'AccuPOS Sync: Не удалось создать сотрудника AccuPOS Sync',
+                3,
+                null,
+                'AccuPos_Sync'
+            );
+
+            return false;
+
+        } catch (Exception $e) {
+            PrestaShopLogger::addLog(
+                'AccuPOS Sync: Ошибка создания сотрудника - ' . $e->getMessage(),
+                4,
+                null,
+                'AccuPos_Sync'
+            );
+
+            return false;
+        }
+    }
+
+    /**
+     * Создание причины движения "AccuPOS Sync" (ID=13)
+     * 
+     * @return bool
+     */
+    private function createStockMovementReason()
+    {
+        try {
+            $reasonId = 13;
+
+            // Проверяем, существует ли уже причина
+            $existingReason = Db::getInstance()->getValue('
+                SELECT id_stock_mvt_reason 
+                FROM ' . _DB_PREFIX_ . 'stock_mvt_reason 
+                WHERE id_stock_mvt_reason = ' . (int)$reasonId
+            );
+
+            if ($existingReason) {
+                // На всякий случай фиксируем в конфигурации корректный reason_id для AccuPOS движений
+                Configuration::updateValue('ACCUPOS_REASON_ID', (int)$reasonId);
+
+                PrestaShopLogger::addLog(
+                    'AccuPOS Sync: Причина движения "AccuPOS Sync" уже существует (ID=' . $reasonId . ')',
+                    1,
+                    null,
+                    'AccuPos_Sync'
+                );
+                
+                return true;
+            }
+
+            // Создаём причину движения
+            $result = Db::getInstance()->insert('stock_mvt_reason', [
+                'id_stock_mvt_reason' => (int)$reasonId,
+                'sign' => -1, // По умолчанию списание (для продаж)
+                'date_add' => date('Y-m-d H:i:s'),
+                'date_upd' => date('Y-m-d H:i:s'),
+                'deleted' => 0
+            ]);
+
+            if (!$result) {
+                throw new Exception('Не удалось вставить запись в stock_mvt_reason');
+            }
+
+            // Добавляем переводы для всех языков
+            $languages = Language::getLanguages(false);
+            $translations = [
+                1 => 'Синхронизация AccuPOS',     // Русский
+                2 => 'סנכרון AccuPOS',              // Иврит  
+                3 => 'AccuPOS Sync'                 // English
+            ];
+
+            foreach ($languages as $lang) {
+                $langId = (int)$lang['id_lang'];
+                $name = isset($translations[$langId]) ? $translations[$langId] : 'AccuPOS Sync';
+                
+                Db::getInstance()->insert('stock_mvt_reason_lang', [
+                    'id_stock_mvt_reason' => (int)$reasonId,
+                    'id_lang' => $langId,
+                    'name' => pSQL($name)
+                ]);
+            }
+
+            // Запоминаем reason_id в конфигурации, чтобы синхронизация всегда ставила правильный тип движения
+            Configuration::updateValue('ACCUPOS_REASON_ID', (int)$reasonId);
+
+            PrestaShopLogger::addLog(
+                'AccuPOS Sync: Создана причина движения "AccuPOS Sync" (ID=' . $reasonId . ')',
+                1,
+                null,
+                'AccuPos_Sync'
+            );
+
+            return true;
+
+        } catch (Exception $e) {
+            PrestaShopLogger::addLog(
+                'AccuPOS Sync: Ошибка создания причины движения - ' . $e->getMessage(),
+                4,
+                null,
+                'AccuPos_Sync'
+            );
+
+            return false;
+        }
+    }
+
+    /**
      * Установка значений конфигурации по умолчанию
      */
     private function setDefaultConfiguration()
     {
         Configuration::updateValue('ACCUPOS_ENABLE_CRON', 1);
         Configuration::updateValue('ACCUPOS_CRON_TIME', '02:00');
+        // Новый формат расписания: диспетчер cron запускается часто, периодичность задаётся тут
+        Configuration::updateValue('ACCUPOS_CRON_INTERVAL_MINUTES', 10);
+        Configuration::updateValue('ACCUPOS_CRON_SYNC_MODE', 'today'); // today|yesterday
+        Configuration::updateValue('ACCUPOS_CRON_LAST_RUN_TS', 0);
+        Configuration::updateValue('ACCUPOS_CRON_LOCK_TS', 0);
         Configuration::updateValue('ACCUPOS_DEFAULT_WAREHOUSE', 1);
         Configuration::updateValue('ACCUPOS_SYNC_WINDOW_DAYS', 7);
+        Configuration::updateValue('ACCUPOS_SKU_EXCLUSIONS', '');
+        Configuration::updateValue('ACCUPOS_INVENTORY_EXCLUDE_EAN13', '');
         Configuration::updateValue('ACCUPOS_ENABLE_REPORTS', 1);
         Configuration::updateValue('ACCUPOS_ADMIN_EMAIL', Configuration::get('PS_SHOP_EMAIL'));
         Configuration::updateValue('ACCUPOS_REPORT_FORMAT', 'csv_html');
@@ -263,6 +602,10 @@ class AccuPos_Sync extends Module
     {
         Configuration::deleteByName('ACCUPOS_ENABLE_CRON');
         Configuration::deleteByName('ACCUPOS_CRON_TIME');
+        Configuration::deleteByName('ACCUPOS_CRON_INTERVAL_MINUTES');
+        Configuration::deleteByName('ACCUPOS_CRON_SYNC_MODE');
+        Configuration::deleteByName('ACCUPOS_CRON_LAST_RUN_TS');
+        Configuration::deleteByName('ACCUPOS_CRON_LOCK_TS');
         Configuration::deleteByName('ACCUPOS_DEFAULT_WAREHOUSE');
         Configuration::deleteByName('ACCUPOS_SYNC_WINDOW_DAYS');
         Configuration::deleteByName('ACCUPOS_ENABLE_REPORTS');
@@ -288,10 +631,33 @@ class AccuPos_Sync extends Module
         if (Tools::isSubmit('submitAccuPosConfig')) {
             $output .= $this->processConfiguration();
         }
+        if (Tools::isSubmit('submitAccuPosCron')) {
+            $output .= $this->processCronConfiguration();
+        }
+        if (Tools::isSubmit('submitAccuPosSyncSettings')) {
+            $output .= $this->processSyncSettings();
+        }
 
         // Обработка кнопки "Test Connection"
         if (Tools::isSubmit('testAccuPosConnection')) {
             $output .= $this->testConnection();
+        }
+
+        // Тестовая отправка email отчёта
+        if (Tools::isSubmit('sendAccuPosTestReport')) {
+            try {
+                // Явно подключаем класс из модуля (модульные классы не всегда автолоадятся в AdminModules)
+                require_once dirname(__FILE__) . '/classes/AccuPosLogger.php';
+                $logger = new AccuPosLogger();
+                $ok = $logger->sendTestEmail();
+                if ($ok) {
+                    $output .= $this->displayConfirmation($this->l('Тестовое письмо отправлено. Проверьте inbox/spam и логи.'));
+                } else {
+                    $output .= $this->displayError($this->l('Не удалось отправить тестовое письмо. Проверьте настройки почты PrestaShop и логи модуля.'));
+                }
+            } catch (Exception $e) {
+                $output .= $this->displayError($this->l('Ошибка отправки тестового письма: ') . $e->getMessage());
+            }
         }
 
         // Обработка кнопки "Manual Sync" 
@@ -318,21 +684,38 @@ class AccuPos_Sync extends Module
 
         // Загружаем JS для асинхронной синхронизации
         $this->context->controller->addJs($this->_path . 'views/js/async_sync.js');
+        // JS для отчёта инвентаризации (поиск/сортировка/печать)
+        $this->context->controller->addJs($this->_path . 'views/js/inventory_report.js');
         
         // Загружаем CSS для интерфейса мониторинга
         $this->context->controller->addCss($this->_path . 'views/css/accupos_admin.css');
 
-        // Отображение формы конфигурации
-        $output .= $this->displayConfigurationForm();
+        // Табы интерфейса
+        $activeTab = (string)Tools::getValue('accupos_tab', 'dashboard'); // dashboard|sync|settings
+        if (!in_array($activeTab, array('dashboard', 'sync', 'settings'), true)) {
+            $activeTab = 'dashboard';
+        }
 
-        // Отображение статуса синхронизации
-        $output .= '<div id="accupos-sync-status"></div>';
+        $output .= $this->renderTabsNavigation($activeTab);
+        $output .= '<div class="accupos-tab-content">';
 
-        // Отображение мониторинга транзакций
-        $output .= $this->displayTransactionMonitoring();
+        if ($activeTab === 'dashboard') {
+            // 1) Dashboard: мониторинг + ежедневный отчёт для инвентаризации
+            $output .= $this->displayTransactionMonitoring();
+            $output .= $this->displayDailyInventoryReport();
+        } elseif ($activeTab === 'sync') {
+            // 2) Расписание/принудительная синхронизация/исключения
+            $output .= $this->displayCronConfigurationForm();
+            $output .= $this->displayManualSyncPanel();
+            $output .= $this->displaySyncSettingsForm();
+            $output .= $this->displayUnmappedSkusPanel();
+        } else {
+            // 3) Подключение/терминалы/логи/отчёты
+            $output .= $this->displayConfigurationForm();
+            $output .= $this->displayTerminalManagement();
+        }
 
-        // Отображение управления терминалами
-        $output .= $this->displayTerminalManagement();
+        $output .= '</div>';
 
         return $output;
     }
@@ -351,10 +734,6 @@ class AccuPos_Sync extends Module
         $dbUser = Tools::getValue('ACCUPOS_DB_USER');
         $dbPass = Tools::getValue('ACCUPOS_DB_PASS');
         
-        $enableCron = Tools::getValue('ACCUPOS_ENABLE_CRON');
-        $cronTime = Tools::getValue('ACCUPOS_CRON_TIME');
-        $defaultWarehouse = Tools::getValue('ACCUPOS_DEFAULT_WAREHOUSE');
-        $syncWindowDays = Tools::getValue('ACCUPOS_SYNC_WINDOW_DAYS');
         $enableReports = Tools::getValue('ACCUPOS_ENABLE_REPORTS');
         $adminEmail = Tools::getValue('ACCUPOS_ADMIN_EMAIL');
         $reportFormat = Tools::getValue('ACCUPOS_REPORT_FORMAT');
@@ -379,15 +758,74 @@ class AccuPos_Sync extends Module
         }
 
         // Сохранение остальных настроек
-        Configuration::updateValue('ACCUPOS_ENABLE_CRON', $enableCron);
-        Configuration::updateValue('ACCUPOS_CRON_TIME', $cronTime);
-        Configuration::updateValue('ACCUPOS_DEFAULT_WAREHOUSE', $defaultWarehouse);
-        Configuration::updateValue('ACCUPOS_SYNC_WINDOW_DAYS', $syncWindowDays);
         Configuration::updateValue('ACCUPOS_ENABLE_REPORTS', $enableReports);
         Configuration::updateValue('ACCUPOS_ADMIN_EMAIL', $adminEmail);
         Configuration::updateValue('ACCUPOS_REPORT_FORMAT', $reportFormat);
 
         return $this->displayConfirmation($this->l('Настройки успешно сохранены'));
+    }
+
+    /**
+     * Обработка сохранения настроек синхронизации/исключений (вкладка Sync)
+     *
+     * @return string
+     */
+    private function processSyncSettings()
+    {
+        $defaultWarehouse = (int)Tools::getValue('ACCUPOS_DEFAULT_WAREHOUSE');
+        $syncWindowDays = (int)Tools::getValue('ACCUPOS_SYNC_WINDOW_DAYS');
+        $skuExclusions = (string)Tools::getValue('ACCUPOS_SKU_EXCLUSIONS');
+        $inventoryExclude = (string)Tools::getValue('ACCUPOS_INVENTORY_EXCLUDE_EAN13');
+
+        if ($syncWindowDays < 0 || $syncWindowDays > 365) {
+            return $this->displayError($this->l('Окно синхронизации должно быть от 0 до 365 дней'));
+        }
+
+        Configuration::updateValue('ACCUPOS_DEFAULT_WAREHOUSE', (int)$defaultWarehouse);
+        Configuration::updateValue('ACCUPOS_SYNC_WINDOW_DAYS', (int)$syncWindowDays);
+        Configuration::updateValue('ACCUPOS_SKU_EXCLUSIONS', $skuExclusions);
+        Configuration::updateValue('ACCUPOS_INVENTORY_EXCLUDE_EAN13', $inventoryExclude);
+
+        return $this->displayConfirmation($this->l('Настройки синхронизации и исключения сохранены'));
+    }
+
+    /**
+     * Обработка сохранения CRON-расписания (отдельная форма)
+     *
+     * @return string
+     */
+    private function processCronConfiguration()
+    {
+        $enableCron = (int)Tools::getValue('ACCUPOS_ENABLE_CRON');
+        $intervalMin = (int)Tools::getValue('ACCUPOS_CRON_INTERVAL_MINUTES');
+        $syncMode = (string)Tools::getValue('ACCUPOS_CRON_SYNC_MODE');
+        $cronTime = (string)Tools::getValue('ACCUPOS_CRON_TIME', '02:00');
+
+        if ($intervalMin < 1 || $intervalMin > 1440) {
+            return $this->displayError($this->l('Интервал должен быть от 1 до 1440 минут'));
+        }
+        if ($syncMode !== 'today' && $syncMode !== 'yesterday') {
+            $syncMode = 'today';
+        }
+
+        // Время для legacy-режима (HH:MM). Используется dispatcher.php, когда выбран "yesterday".
+        $cronTime = trim($cronTime);
+        if (!preg_match('/^\\d{2}:\\d{2}$/', $cronTime)) {
+            $cronTime = '02:00';
+        } else {
+            $hh = (int)substr($cronTime, 0, 2);
+            $mm = (int)substr($cronTime, 3, 2);
+            if ($hh < 0 || $hh > 23 || $mm < 0 || $mm > 59) {
+                $cronTime = '02:00';
+            }
+        }
+
+        Configuration::updateValue('ACCUPOS_ENABLE_CRON', $enableCron ? 1 : 0);
+        Configuration::updateValue('ACCUPOS_CRON_INTERVAL_MINUTES', (int)$intervalMin);
+        Configuration::updateValue('ACCUPOS_CRON_SYNC_MODE', pSQL($syncMode));
+        Configuration::updateValue('ACCUPOS_CRON_TIME', pSQL($cronTime));
+
+        return $this->displayConfirmation($this->l('CRON расписание сохранено'));
     }
 
     /**
@@ -527,51 +965,18 @@ class AccuPos_Sync extends Module
                         'desc' => $this->l('Пароль БД (хранится в зашифрованном виде, оставьте пустым чтобы не менять)')
                     ),
                     
-                    // Раздел: Настройки синхронизации
-                    array(
-                        'type' => 'html',
-                        'name' => '',
-                        'html_content' => '<h4 style="margin-top:30px;">' . $this->l('Настройки синхронизации') . '</h4><hr>'
-                    ),
-                    array(
-                        'type' => 'switch',
-                        'label' => $this->l('Включить CRON'),
-                        'name' => 'ACCUPOS_ENABLE_CRON',
-                        'is_bool' => true,
-                        'values' => array(
-                            array('id' => 'active_on', 'value' => 1, 'label' => $this->l('Да')),
-                            array('id' => 'active_off', 'value' => 0, 'label' => $this->l('Нет'))
-                        )
-                    ),
-                    array(
-                        'type' => 'text',
-                        'label' => $this->l('Время CRON'),
-                        'name' => 'ACCUPOS_CRON_TIME',
-                        'desc' => $this->l('Время запуска синхронизации (формат HH:MM, например 02:00)')
-                    ),
-                    array(
-                        'type' => 'select',
-                        'label' => $this->l('Склад по умолчанию'),
-                        'name' => 'ACCUPOS_DEFAULT_WAREHOUSE',
-                        'options' => array(
-                            'query' => $warehouseOptions,
-                            'id' => 'id',
-                            'name' => 'name'
-                        ),
-                        'desc' => $this->l('Склад для терминалов без явного маппинга')
-                    ),
-                    array(
-                        'type' => 'text',
-                        'label' => $this->l('Окно синхронизации (дни)'),
-                        'name' => 'ACCUPOS_SYNC_WINDOW_DAYS',
-                        'desc' => $this->l('Сколько дней назад синхронизировать транзакции')
-                    ),
-                    
                     // Раздел: Отчёты
                     array(
                         'type' => 'html',
                         'name' => '',
-                        'html_content' => '<h4 style="margin-top:30px;">' . $this->l('Отчёты') . '</h4><hr>'
+                        'html_content' =>
+                            '<h4 style="margin-top:30px;">' . $this->l('Отчёты') . '</h4><hr>' .
+                            '<div class="alert alert-info" style="margin-bottom:15px;">' .
+                            '<b>' . $this->l('Важно:') . '</b> ' .
+                            $this->l('ежедневный email-отчёт отправляется только если за день есть ошибки синхронизации (status=error).') .
+                            '<br>' .
+                            $this->l('Для проверки работы почты используйте кнопку') . ' <b>' . $this->l('Тест email') . '</b>.' .
+                            '</div>'
                     ),
                     array(
                         'type' => 'switch',
@@ -612,6 +1017,13 @@ class AccuPos_Sync extends Module
                         'icon' => 'process-icon-refresh'
                     ),
                     array(
+                        'title' => $this->l('Тест email'),
+                        'name' => 'sendAccuPosTestReport',
+                        'type' => 'submit',
+                        'class' => 'btn btn-warning',
+                        'icon' => 'process-icon-mail'
+                    ),
+                    array(
                         'title' => $this->l('Принудительная синхронизация'),
                         'id' => 'accupos-manual-sync-btn',
                         'name' => 'runManualSync',
@@ -650,13 +1062,740 @@ class AccuPos_Sync extends Module
         }
         
         $helper->fields_value['ACCUPOS_DB_PASS'] = ''; // Никогда не показываем пароль
-        $helper->fields_value['ACCUPOS_ENABLE_CRON'] = Configuration::get('ACCUPOS_ENABLE_CRON');
-        $helper->fields_value['ACCUPOS_CRON_TIME'] = Configuration::get('ACCUPOS_CRON_TIME');
-        $helper->fields_value['ACCUPOS_DEFAULT_WAREHOUSE'] = Configuration::get('ACCUPOS_DEFAULT_WAREHOUSE');
-        $helper->fields_value['ACCUPOS_SYNC_WINDOW_DAYS'] = Configuration::get('ACCUPOS_SYNC_WINDOW_DAYS');
         $helper->fields_value['ACCUPOS_ENABLE_REPORTS'] = Configuration::get('ACCUPOS_ENABLE_REPORTS');
         $helper->fields_value['ACCUPOS_ADMIN_EMAIL'] = Configuration::get('ACCUPOS_ADMIN_EMAIL');
         $helper->fields_value['ACCUPOS_REPORT_FORMAT'] = Configuration::get('ACCUPOS_REPORT_FORMAT');
+
+        return $helper->generateForm(array($fields_form));
+    }
+
+    /**
+     * Навигация по вкладкам (3 вкладки)
+     *
+     * @param string $activeTab
+     * @return string
+     */
+    private function renderTabsNavigation($activeTab)
+    {
+        $baseUrl = AdminController::$currentIndex . '&configure=' . $this->name . '&token=' . Tools::getAdminTokenLite('AdminModules');
+
+        $tabs = array(
+            'dashboard' => $this->l('Дашборд'),
+            'sync' => $this->l('Синхронизация / Исключения'),
+            'settings' => $this->l('Настройки / Терминалы'),
+        );
+
+        $html = '<div class="panel accupos-no-print" style="margin-top:15px;">';
+        $html .= '<div class="panel-body">';
+        $html .= '<ul class="nav nav-tabs" role="tablist">';
+
+        foreach ($tabs as $key => $label) {
+            $activeClass = ($activeTab === $key) ? ' class="active"' : '';
+            $html .= '<li role="presentation"' . $activeClass . '>';
+            $html .= '<a href="' . $baseUrl . '&accupos_tab=' . urlencode($key) . '">' . Tools::safeOutput($label) . '</a>';
+            $html .= '</li>';
+        }
+
+        $html .= '</ul>';
+        $html .= '</div>';
+        $html .= '</div>';
+
+        return $html;
+    }
+
+    /**
+     * Панель ручного запуска синхронизации (кнопка + статус)
+     *
+     * @return string
+     */
+    private function displayManualSyncPanel()
+    {
+        $html = '<div class="panel" style="margin-top: 20px;">';
+        $html .= '<div class="panel-heading"><i class="icon-refresh"></i> ' . $this->l('Принудительная синхронизация') . '</div>';
+        $html .= '<div class="panel-body">';
+        $html .= '<p>' . $this->l('Запускает синхронизацию транзакций напрямую (как ручная синхронизация).') . '</p>';
+        $html .= '<button type="button" id="accupos-manual-sync-btn" class="btn btn-success">';
+        $html .= '<i class="icon-refresh"></i> ' . $this->l('Принудительная синхронизация');
+        $html .= '</button>';
+        $html .= '<div id="accupos-sync-status" style="margin-top: 15px;"></div>';
+        $html .= '</div>';
+        $html .= '</div>';
+
+        return $html;
+    }
+
+    /**
+     * Настройки синхронизации и исключений (вкладка Sync)
+     *
+     * @return string
+     */
+    private function displaySyncSettingsForm()
+    {
+        $warehouses = Warehouse::getWarehouses(true);
+        $warehouseOptions = array();
+        foreach ($warehouses as $warehouse) {
+            $warehouseOptions[] = array(
+                'id' => $warehouse['id_warehouse'],
+                'name' => $warehouse['name']
+            );
+        }
+
+        $fields_form = array(
+            'form' => array(
+                'legend' => array(
+                    'title' => $this->l('Настройки синхронизации и исключения'),
+                    'icon' => 'icon-filter'
+                ),
+                'input' => array(
+                    array(
+                        'type' => 'select',
+                        'label' => $this->l('Склад по умолчанию'),
+                        'name' => 'ACCUPOS_DEFAULT_WAREHOUSE',
+                        'options' => array(
+                            'query' => $warehouseOptions,
+                            'id' => 'id',
+                            'name' => 'name'
+                        ),
+                        'desc' => $this->l('Склад для терминалов без явного маппинга')
+                    ),
+                    array(
+                        'type' => 'text',
+                        'label' => $this->l('Окно синхронизации (дни)'),
+                        'name' => 'ACCUPOS_SYNC_WINDOW_DAYS',
+                        'desc' => $this->l('Сколько дней назад синхронизировать транзакции (0 = только текущая дата старта)')
+                    ),
+                    array(
+                        'type' => 'textarea',
+                        'label' => $this->l('Технические EAN13 / SKU (исключить из синхронизации)'),
+                        'name' => 'ACCUPOS_SKU_EXCLUSIONS',
+                        'rows' => 6,
+                        'desc' => $this->l('По одному SKU/EAN13 на строку. Эти позиции будут помечаться как skipped, без ошибок.')
+                    ),
+                    array(
+                        'type' => 'textarea',
+                        'label' => $this->l('Исключить из выкладки (подсветка в отчёте)'),
+                        'name' => 'ACCUPOS_INVENTORY_EXCLUDE_EAN13',
+                        'rows' => 6,
+                        'desc' => $this->l('По одному EAN13 на строку. Эти товары будут подсвечены в отчёте ежедневной инвентаризации.')
+                    ),
+                ),
+                'submit' => array(
+                    'title' => $this->l('Сохранить'),
+                    'class' => 'btn btn-default pull-right'
+                ),
+            )
+        );
+
+        $helper = new HelperForm();
+        $helper->module = $this;
+        $helper->name_controller = $this->name;
+        $helper->token = Tools::getAdminTokenLite('AdminModules');
+        $helper->currentIndex = AdminController::$currentIndex . '&configure=' . $this->name . '&accupos_tab=sync';
+        $helper->submit_action = 'submitAccuPosSyncSettings';
+        $helper->default_form_language = (int)Configuration::get('PS_LANG_DEFAULT');
+
+        $helper->fields_value['ACCUPOS_DEFAULT_WAREHOUSE'] = (int)Configuration::get('ACCUPOS_DEFAULT_WAREHOUSE');
+        $helper->fields_value['ACCUPOS_SYNC_WINDOW_DAYS'] = (int)Configuration::get('ACCUPOS_SYNC_WINDOW_DAYS', 7);
+        $helper->fields_value['ACCUPOS_SKU_EXCLUSIONS'] = (string)Configuration::get('ACCUPOS_SKU_EXCLUSIONS');
+        $helper->fields_value['ACCUPOS_INVENTORY_EXCLUDE_EAN13'] = (string)Configuration::get('ACCUPOS_INVENTORY_EXCLUDE_EAN13');
+
+        return $helper->generateForm(array($fields_form));
+    }
+
+    /**
+     * Панель "не найдено по EAN13" (ошибки Product not found)
+     *
+     * @return string
+     */
+    private function displayUnmappedSkusPanel()
+    {
+        $sql = 'SELECT sku, COUNT(*) AS cnt, MAX(date_sale) AS last_sale
+                FROM ' . _DB_PREFIX_ . 'accupos_transactions
+                WHERE status = \'error\'
+                  AND error_message LIKE \'Product not found%\'
+                  AND DATE(date_sale) = CURDATE()
+                GROUP BY sku
+                ORDER BY cnt DESC
+                LIMIT 100';
+
+        $rows = Db::getInstance()->executeS($sql);
+
+        $html = '<div class="panel" style="margin-top: 20px;">';
+        $html .= '<div class="panel-heading"><i class="icon-warning"></i> ' . $this->l('Товары, не найденные по EAN13/SKU (сегодня)') . '</div>';
+        $html .= '<div class="panel-body">';
+
+        if (empty($rows)) {
+            $html .= '<div class="alert alert-success"><i class="icon-check"></i> ' . $this->l('Сегодня нет ошибок "Product not found".') . '</div>';
+        } else {
+            $html .= '<p class="help-block">' . $this->l('Если это "технические" EAN13 — добавьте их в исключения выше, чтобы они помечались как skipped.') . '</p>';
+            $html .= '<div class="table-responsive">';
+            $html .= '<table class="table table-bordered table-hover">';
+            $html .= '<thead><tr>';
+            $html .= '<th>' . $this->l('SKU/EAN13') . '</th>';
+            $html .= '<th style="width:120px;">' . $this->l('Кол-во ошибок') . '</th>';
+            $html .= '<th style="width:180px;">' . $this->l('Последняя продажа') . '</th>';
+            $html .= '</tr></thead><tbody>';
+            foreach ($rows as $r) {
+                $html .= '<tr>';
+                $html .= '<td><code>' . Tools::safeOutput($r['sku']) . '</code></td>';
+                $html .= '<td>' . (int)$r['cnt'] . '</td>';
+                $html .= '<td>' . Tools::safeOutput($r['last_sale']) . '</td>';
+                $html .= '</tr>';
+            }
+            $html .= '</tbody></table></div>';
+        }
+
+        $html .= '</div></div>';
+        return $html;
+    }
+
+    /**
+     * Ежедневный отчёт по товарам с транзакциями (для инвентаризации)
+     *
+     * @return string
+     */
+    private function displayDailyInventoryReport()
+    {
+        $idLang = (int)$this->context->language->id;
+        $idShop = (int)$this->context->shop->id;
+
+        // --- Фильтры отчёта (дата + склады) ---
+        $selectedDate = (string)Tools::getValue('accupos_inventory_date', date('Y-m-d'));
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $selectedDate)) {
+            $selectedDate = date('Y-m-d');
+        }
+
+        // Выбранные склады: поддерживаем 2 формата:
+        // - массив из формы (name="accupos_inventory_warehouses[]")
+        // - строка (совместимость), например "2,3,4"
+        $selectedWarehouseIds = array();
+        $selectedWhValue = Tools::getValue('accupos_inventory_warehouses', array());
+        if (is_array($selectedWhValue)) {
+            foreach ($selectedWhValue as $v) {
+                $id = (int)$v;
+                if ($id > 0) {
+                    $selectedWarehouseIds[$id] = true;
+                }
+            }
+        } else {
+            $selectedWhRaw = (string)$selectedWhValue;
+            if ($selectedWhRaw !== '') {
+                foreach (preg_split('/[,\s]+/', $selectedWhRaw) as $part) {
+                    $id = (int)trim((string)$part);
+                    if ($id > 0) {
+                        $selectedWarehouseIds[$id] = true;
+                    }
+                }
+            }
+        }
+        $selectedWarehouseIds = array_keys($selectedWarehouseIds);
+
+        // Список всех складов (для селектора)
+        // ВАЖНО: скрываем склад STK_1 Haifa — он не должен участвовать в выборе/отчёте.
+        $allWarehousesRaw = Db::getInstance()->executeS(
+            'SELECT id_warehouse, reference, name FROM ' . _DB_PREFIX_ . 'warehouse ORDER BY name ASC'
+        );
+        $allWarehouses = array();
+        $hiddenWarehouseIds = array();
+        foreach ($allWarehousesRaw as $w) {
+            $wid = (int)$w['id_warehouse'];
+            $wname = isset($w['name']) ? (string)$w['name'] : '';
+            $wref = isset($w['reference']) ? (string)$w['reference'] : '';
+
+            // Самый надёжный критерий: reference склада (обычно STK_1 / STK_2 / STK_3 ...)
+            $isStk1Ref = ($wref !== '') && (bool)preg_match('/\bstk[_\s-]*1\b/i', $wref);
+
+            // Fallback (если reference пустой/нетипичный): пробуем по имени
+            $isStk1 = (bool)preg_match('/\bstk[_\s-]*1\b/i', $wname);
+            $isHaifa = (stripos($wname, 'haifa') !== false) || (stripos($wname, 'хайф') !== false);
+
+            if ($wid > 0 && ($isStk1Ref || ($isStk1 && $isHaifa))) {
+                $hiddenWarehouseIds[] = $wid;
+                continue;
+            }
+            $allWarehouses[] = $w;
+        }
+        if (!empty($hiddenWarehouseIds) && !empty($selectedWarehouseIds)) {
+            $selectedWarehouseIds = array_values(array_diff($selectedWarehouseIds, $hiddenWarehouseIds));
+        }
+
+        // В отчёте инвентаризации показываем только операции, которые УМЕНЬШАЮТ остаток.
+        // В нашей модели AccuPOS: qty > 0 = продажа (списание), qty < 0 = возврат/пополнение.
+        $txOnlyDecreaseWhere = ' AND qty > 0 ';
+
+        // Склады, по которым были транзакции за выбранную дату (с учётом фильтра по складам)
+        $txWhWhere = '';
+        if (!empty($selectedWarehouseIds)) {
+            $txWhWhere = ' AND warehouse_id IN (' . implode(',', array_map('intval', $selectedWarehouseIds)) . ')';
+        }
+        if (!empty($hiddenWarehouseIds)) {
+            $txWhWhere .= ' AND warehouse_id NOT IN (' . implode(',', array_map('intval', $hiddenWarehouseIds)) . ')';
+        }
+
+        $whSql =
+            'SELECT DISTINCT warehouse_id
+             FROM ' . _DB_PREFIX_ . 'accupos_transactions
+             WHERE status = \'success\'
+               AND warehouse_id IS NOT NULL
+               ' . $txOnlyDecreaseWhere . '
+               AND DATE(date_sale) = \'' . pSQL($selectedDate) . '\'
+               ' . $txWhWhere . '
+             ORDER BY warehouse_id ASC';
+
+        $whRows = Db::getInstance()->executeS($whSql);
+
+        // Какие колонки показывать:
+        // - если пользователь выбрал склады → показываем их (даже если за дату нет транзакций)
+        // - иначе → показываем склады, по которым есть транзакции за дату
+        $warehouseIds = array();
+        if (!empty($selectedWarehouseIds)) {
+            $warehouseIds = $selectedWarehouseIds;
+        } else {
+            foreach ($whRows as $w) {
+                $warehouseIds[] = (int)$w['warehouse_id'];
+            }
+        }
+        if (!empty($hiddenWarehouseIds) && !empty($warehouseIds)) {
+            $warehouseIds = array_values(array_diff($warehouseIds, $hiddenWarehouseIds));
+        }
+
+        if (empty($warehouseIds)) {
+            $warehouseIds = array();
+        }
+
+        $warehouseMap = array();
+        if (!empty($warehouseIds)) {
+            $whListSql = implode(',', array_map('intval', $warehouseIds));
+            $wh = Db::getInstance()->executeS('SELECT id_warehouse, name FROM ' . _DB_PREFIX_ . 'warehouse WHERE id_warehouse IN (' . $whListSql . ')');
+            foreach ($wh as $w) {
+                $warehouseMap[(int)$w['id_warehouse']] = (string)$w['name'];
+            }
+        }
+
+        // Товары, у которых были транзакции за выбранную дату + текущие остатки по выбранным складам
+        $txFilterWhere = '';
+        if (!empty($warehouseIds)) {
+            // фильтруем транзакции по выбранным складам (важно, если пользователь выбрал склады)
+            $txFilterWhere .= ' AND t.warehouse_id IN (' . implode(',', array_map('intval', $warehouseIds)) . ')';
+        }
+        if (!empty($hiddenWarehouseIds)) {
+            $txFilterWhere .= ' AND t.warehouse_id NOT IN (' . implode(',', array_map('intval', $hiddenWarehouseIds)) . ')';
+        }
+
+        $stockJoin = 'LEFT JOIN ' . _DB_PREFIX_ . 'stock s
+                    ON (s.id_product = p.id_product AND s.id_product_attribute = 0)';
+        if (!empty($warehouseIds)) {
+            $stockJoin = 'LEFT JOIN ' . _DB_PREFIX_ . 'stock s
+                    ON (s.id_product = p.id_product AND s.id_product_attribute = 0 AND s.id_warehouse IN (' . implode(',', array_map('intval', $warehouseIds)) . '))';
+        }
+
+        $sql =
+            'SELECT
+                p.id_product,
+                p.ean13,
+                p.upc,
+                p.reference,
+                pl.name AS product_name,
+                s.id_warehouse,
+                s.physical_quantity
+            FROM ' . _DB_PREFIX_ . 'accupos_transactions t
+            INNER JOIN ' . _DB_PREFIX_ . 'product p
+                ON (
+                    CONVERT(p.ean13 USING utf8mb4) COLLATE utf8mb4_unicode_ci = CONVERT(t.sku USING utf8mb4) COLLATE utf8mb4_unicode_ci
+                    OR CONVERT(p.upc USING utf8mb4) COLLATE utf8mb4_unicode_ci = CONVERT(t.sku USING utf8mb4) COLLATE utf8mb4_unicode_ci
+                )
+            INNER JOIN ' . _DB_PREFIX_ . 'product_lang pl
+                ON (pl.id_product = p.id_product AND pl.id_lang = ' . (int)$idLang . ' AND pl.id_shop = ' . (int)$idShop . ')
+            ' . $stockJoin . '
+            WHERE t.status = \'success\'
+              AND t.qty > 0
+              AND DATE(t.date_sale) = \'' . pSQL($selectedDate) . '\'
+              ' . $txFilterWhere . '
+            GROUP BY p.id_product, s.id_warehouse
+            ORDER BY pl.name ASC';
+
+        $rows = Db::getInstance()->executeS($sql);
+
+        // Список значений для подсветки "исключить из выкладки"
+        // Пользователь может вводить EAN13/UPC/SKU. Нормализуем: оставляем только цифры.
+        $excludeRaw = (string)Configuration::get('ACCUPOS_INVENTORY_EXCLUDE_EAN13');
+        $exclude = array();
+        $excludeTokens = preg_split('/[\\s,;]+/u', (string)$excludeRaw, -1, PREG_SPLIT_NO_EMPTY);
+        foreach ($excludeTokens as $tok) {
+            $tok = trim((string)$tok);
+            if ($tok === '') {
+                continue;
+            }
+            $digits = preg_replace('/\\D+/', '', $tok);
+            if ($digits === '') {
+                continue;
+            }
+            $exclude[$digits] = true;
+        }
+
+        // Собираем данные по продуктам
+        $products = array();
+        foreach ($rows as $r) {
+            $pid = (int)$r['id_product'];
+            if (!isset($products[$pid])) {
+                $products[$pid] = array(
+                    'name' => (string)$r['product_name'],
+                    'ean13' => (string)$r['ean13'],
+                    'upc' => (string)$r['upc'],
+                    'reference' => (string)$r['reference'],
+                    'qty' => array(),
+                );
+            }
+            $whId = (int)$r['id_warehouse'];
+            if ($whId > 0) {
+                $products[$pid]['qty'][$whId] = (int)$r['physical_quantity'];
+            }
+        }
+
+        /**
+         * ВАЖНО: Для прошлых дат показываем "остаток на конец выбранного дня".
+         *
+         * Т.к. в `ps_stock` всегда хранится "текущий" остаток, для выбранной даты D считаем:
+         *   qty_at_end_of_D = current_qty - SUM(movements_after_D)
+         *
+         * Где movements_after_D — все движения из `ps_stock_mvt` после 23:59:59 выбранной даты
+         * (по тем же product + warehouse). Это позволяет корректно пересмотреть отчёт за прошлый день.
+         */
+        if (!empty($products) && !empty($warehouseIds)) {
+            $productIds = array_map('intval', array_keys($products));
+            $whIdsSql = implode(',', array_map('intval', $warehouseIds));
+            $pIdsSql = implode(',', $productIds);
+
+            $endOfDay = date('Y-m-d 23:59:59', strtotime($selectedDate));
+
+            $deltaRows = Db::getInstance()->executeS(
+                'SELECT
+                    st.id_product,
+                    st.id_warehouse,
+                    SUM(CASE WHEN m.sign < 0 THEN -1 ELSE 1 END * m.physical_quantity) AS delta_after
+                 FROM ' . _DB_PREFIX_ . 'stock_mvt m
+                 INNER JOIN ' . _DB_PREFIX_ . 'stock st
+                    ON (st.id_stock = m.id_stock)
+                 WHERE m.date_add > \'' . pSQL($endOfDay) . '\'
+                   AND st.id_product IN (' . $pIdsSql . ')
+                   AND st.id_product_attribute = 0
+                   AND st.id_warehouse IN (' . $whIdsSql . ')
+                 GROUP BY st.id_product, st.id_warehouse'
+            );
+
+            $deltaMap = array();
+            foreach ($deltaRows as $dr) {
+                $pid = (int)$dr['id_product'];
+                $wid = (int)$dr['id_warehouse'];
+                $delta = (float)$dr['delta_after'];
+                if ($pid > 0 && $wid > 0 && $delta != 0.0) {
+                    if (!isset($deltaMap[$pid])) {
+                        $deltaMap[$pid] = array();
+                    }
+                    $deltaMap[$pid][$wid] = $delta;
+                }
+            }
+
+            // Корректируем qty по каждому складу
+            foreach ($products as $pid => &$p) {
+                foreach ($warehouseIds as $wid) {
+                    $currentQty = isset($p['qty'][$wid]) ? (int)$p['qty'][$wid] : 0;
+                    $deltaAfter = (isset($deltaMap[(int)$pid]) && isset($deltaMap[(int)$pid][(int)$wid]))
+                        ? (float)$deltaMap[(int)$pid][(int)$wid]
+                        : 0.0;
+                    $p['qty'][$wid] = (int)round($currentQty - $deltaAfter);
+                }
+            }
+            unset($p);
+        }
+
+        // Убираем товары, у которых остаток на конец выбранного дня = 0
+        // (по всем выбранным складам; если выбран 1 склад — правило работает "в лоб" для него).
+        if (!empty($products) && !empty($warehouseIds)) {
+            foreach ($products as $pid => $p) {
+                $hasPositiveQty = false;
+                foreach ($warehouseIds as $wid) {
+                    $qty = isset($p['qty'][(int)$wid]) ? (int)$p['qty'][(int)$wid] : 0;
+                    if ($qty > 0) {
+                        $hasPositiveQty = true;
+                        break;
+                    }
+                }
+                if (!$hasPositiveQty) {
+                    unset($products[$pid]);
+                }
+            }
+        }
+
+        $html = '<div class="panel accupos-inventory-report" data-accupos-inventory-root style="margin-top: 20px;">';
+        $html .= '<div class="panel-heading">';
+        $html .= '<i class="icon-list-alt"></i> ' . $this->l('Отчёт инвентаризации (остаток на конец выбранного дня)') . ' <small class="text-muted">(' . Tools::safeOutput($selectedDate) . ')</small>';
+        $html .= '<div class="pull-right accupos-no-print">';
+        $html .= '<button type="button" class="btn btn-default btn-xs" data-accupos-print-inventory>';
+        $html .= '<i class="icon-print"></i> ' . $this->l('Печать');
+        $html .= '</button>';
+        $html .= '</div>';
+        $html .= '</div>';
+        $html .= '<div class="panel-body">';
+
+        // Печатаемый заголовок/дата (видно только в режиме печати)
+        $html .= '<div class="accupos-only-print accupos-print-header">';
+        $html .= '<div class="accupos-print-title">' . $this->l('Отчёт инвентаризации') . '</div>';
+        $html .= '<div class="accupos-print-subtitle">' . $this->l('Дата отчёта:') . ' ' . Tools::safeOutput(date('d.m.Y', strtotime($selectedDate))) . '</div>';
+        $html .= '<div class="accupos-print-subtitle">' . $this->l('Сформировано:') . ' ' . Tools::safeOutput(date('d.m.Y H:i')) . '</div>';
+        // Сотрудник (админ), под учёткой которого распечатывается документ
+        $employeeName = '';
+        if (isset($this->context->employee) && $this->context->employee && (int)$this->context->employee->id > 0) {
+            $employeeName = trim((string)$this->context->employee->firstname . ' ' . (string)$this->context->employee->lastname);
+        }
+        if ($employeeName !== '') {
+            $html .= '<div class="accupos-print-subtitle">' . $this->l('Сотрудник:') . ' ' . Tools::safeOutput($employeeName) . '</div>';
+        }
+        if (!empty($warehouseIds)) {
+            $names = array();
+            foreach ($warehouseIds as $wid) {
+                $names[] = isset($warehouseMap[(int)$wid]) ? $warehouseMap[(int)$wid] : ('WH #' . (int)$wid);
+            }
+            $html .= '<div class="accupos-print-subtitle">' . $this->l('Склады:') . ' ' . Tools::safeOutput(implode(', ', $names)) . '</div>';
+        }
+        $html .= '</div>';
+
+        // Форма выбора даты/складов (GET)
+        // Важно: PrestaShop может редиректить на главную админки при invalid token.
+        // Поэтому делаем максимально "железный" вариант: action=index.php + скрытые поля (controller/token/etc).
+        $adminToken = (string)Tools::getValue('token');
+        if ($adminToken === '') {
+            $adminToken = Tools::getAdminTokenLite('AdminModules');
+        }
+        $html .= '<form method="get" action="index.php" class="accupos-no-print" style="margin-bottom:10px;">';
+        $html .= '<input type="hidden" name="controller" value="AdminModules" />';
+        $html .= '<input type="hidden" name="configure" value="' . Tools::safeOutput($this->name) . '" />';
+        $html .= '<input type="hidden" name="module_name" value="' . Tools::safeOutput($this->name) . '" />';
+        $html .= '<input type="hidden" name="tab_module" value="administration" />';
+        $html .= '<input type="hidden" name="accupos_tab" value="dashboard" />';
+        $html .= '<input type="hidden" name="token" value="' . Tools::safeOutput($adminToken) . '" />';
+        $html .= '<div class="row">';
+        $html .= '<div class="col-md-3">';
+        $html .= '<label class="control-label" style="font-weight:600;">' . $this->l('Дата') . '</label>';
+        $html .= '<input type="date" class="form-control" name="accupos_inventory_date" value="' . Tools::safeOutput($selectedDate) . '"/>';
+        $html .= '</div>';
+        $html .= '<div class="col-md-6">';
+        $html .= '<label class="control-label" style="font-weight:600;">' . $this->l('Склады') . '</label>';
+        $html .= '<select class="form-control" name="accupos_inventory_warehouses[]" multiple size="3">';
+        foreach ($allWarehouses as $w) {
+            $wid = (int)$w['id_warehouse'];
+            // Если пользователь явно не выбирал склады — подставляем "склады с транзакциями за дату"
+            $defaultSelected = empty($selectedWarehouseIds) ? in_array($wid, $warehouseIds, true) : in_array($wid, $selectedWarehouseIds, true);
+            $selected = $defaultSelected ? ' selected="selected"' : '';
+            $html .= '<option value="' . (int)$wid . '"' . $selected . '>' . Tools::safeOutput($w['name']) . '</option>';
+        }
+        $html .= '</select>';
+        $html .= '<p class="help-block" style="margin-top:5px;">' . $this->l('Если не выбирать склады — отчёт покажет склады, по которым были транзакции за выбранную дату. Остатки считаются на конец выбранного дня.') . '</p>';
+        $html .= '</div>';
+        $html .= '<div class="col-md-3" style="padding-top:25px;">';
+        $html .= '<button type="submit" class="btn btn-primary">' . $this->l('Показать') . '</button> ';
+        $resetUrl = 'index.php?controller=AdminModules'
+            . '&configure=' . urlencode($this->name)
+            . '&module_name=' . urlencode($this->name)
+            . '&tab_module=administration'
+            . '&accupos_tab=dashboard'
+            . '&token=' . urlencode($adminToken);
+        $html .= '<a class="btn btn-default" href="' . Tools::safeOutput($resetUrl) . '">' . $this->l('Сброс') . '</a>';
+        $html .= '</div>';
+        $html .= '</div>';
+        $html .= '</form>';
+
+        if (empty($products)) {
+            $html .= '<div class="alert alert-info">' . $this->l('Нет транзакций AccuPOS, которые уменьшают остаток (продажи/списания), для выбранных условий отчёта.') . '</div>';
+        } else {
+            // Панель поиска
+            $html .= '<div class="row accupos-no-print" style="margin-bottom:10px;">';
+            $html .= '<div class="col-md-6">';
+            $html .= '<div class="input-group">';
+            $html .= '<input type="text" class="form-control" data-accupos-inventory-search placeholder="' . Tools::safeOutput($this->l('Поиск по названию или EAN13...')) . '" />';
+            $html .= '<span class="input-group-btn">';
+            $html .= '<button type="button" class="btn btn-default" data-accupos-inventory-reset>';
+            $html .= '<i class="icon-remove"></i> ' . $this->l('Сброс');
+            $html .= '</button>';
+            $html .= '</span>';
+            $html .= '</div>';
+            $html .= '</div>';
+            $html .= '<div class="col-md-6 text-right" style="padding-top:7px;">';
+            $html .= '<small class="text-muted">' . $this->l('Сортировка: клик по заголовку колонки') . '</small>';
+            $html .= '</div>';
+            $html .= '</div>';
+
+            $html .= '<div class="table-responsive">';
+            $html .= '<table class="table table-bordered table-hover" data-accupos-inventory-table>';
+            $html .= '<thead><tr>';
+            $html .= '<th data-sort-idx="0" data-sort-type="text">' . $this->l('Наименование') . '</th>';
+            $html .= '<th style="width:140px;" data-sort-idx="1" data-sort-type="text">' . $this->l('EAN13') . '</th>';
+            $wIndex = 0;
+            foreach ($warehouseIds as $whId) {
+                $label = isset($warehouseMap[$whId]) ? $warehouseMap[$whId] : ('WH #' . $whId);
+                // idx: 2..n (фиксируем индекс без array_search для скорости/надёжности)
+                $idx = 2 + $wIndex;
+                $html .= '<th style="width:120px;" data-sort-idx="' . (int)$idx . '" data-sort-type="number">' . Tools::safeOutput($label) . '</th>';
+                $wIndex++;
+            }
+            // Колонка для печати: менеджер ставит галочки при проверке
+            $html .= '<th class="accupos-only-print" style="width:80px;">' . $this->l('Проверено') . '</th>';
+            $html .= '</tr></thead><tbody>';
+
+            foreach ($products as $p) {
+                $ean = $p['ean13'] ?: $p['upc'];
+
+                $cand = array();
+                $cand[] = preg_replace('/\\D+/', '', (string)$p['ean13']);
+                $cand[] = preg_replace('/\\D+/', '', (string)$p['upc']);
+                $cand[] = preg_replace('/\\D+/', '', (string)$p['reference']);
+                $isExcluded = false;
+                foreach ($cand as $c) {
+                    if ($c !== '' && isset($exclude[$c])) {
+                        $isExcluded = true;
+                        break;
+                    }
+                }
+
+                $rowClass = $isExcluded ? ' class="accupos-row-exclude"' : '';
+                $html .= '<tr' . $rowClass . '>';
+                $html .= '<td>' . Tools::safeOutput($p['name']) . '</td>';
+                $html .= '<td><code>' . Tools::safeOutput($ean) . '</code></td>';
+                foreach ($warehouseIds as $whId) {
+                    $qty = isset($p['qty'][$whId]) ? (int)$p['qty'][$whId] : 0;
+                    $html .= '<td class="text-center"><strong>' . $qty . '</strong></td>';
+                }
+                // Квадратик для галочки (только печать)
+                $html .= '<td class="accupos-only-print accupos-check-cell"><span class="accupos-check-square"></span></td>';
+                $html .= '</tr>';
+            }
+
+            $html .= '</tbody></table></div>';
+            $html .= '<p class="help-block accupos-no-print">' . $this->l('Подсветка: товары, отмеченные как "исключить из выкладки".') . '</p>';
+        }
+
+        $html .= '</div></div>';
+        return $html;
+    }
+
+    /**
+     * Отдельная форма: настройки CRON расписания
+     *
+     * @return string
+     */
+    private function displayCronConfigurationForm()
+    {
+        // Рекомендуемая схема: dispatcher+worker каждую минуту; частота/режим задаются в настройках.
+        $cronDispatcherLine = '* * * * * /usr/bin/php7.4 ' . _PS_ROOT_DIR_ . '/modules/accupos_sync/cron/dispatcher.php >> ' . _PS_ROOT_DIR_ . '/var/logs/cron/accupos_cron.log 2>&1';
+        $cronWorkerLine = '* * * * * /usr/bin/php7.4 ' . _PS_ROOT_DIR_ . '/modules/accupos_sync/cron/async_worker.php >> ' . _PS_ROOT_DIR_ . '/var/logs/accupos_async_worker.log 2>&1';
+
+        $fields_form = array(
+            'form' => array(
+                'legend' => array(
+                    'title' => $this->l('CRON расписание'),
+                    'icon' => 'icon-time'
+                ),
+                'description' => $this->l('Рекомендуемый подход: в crontab поставить dispatcher (каждую минуту), а периодичность задавать здесь.'),
+                'input' => array(
+                    array(
+                        'type' => 'switch',
+                        'label' => $this->l('Включить CRON'),
+                        'name' => 'ACCUPOS_ENABLE_CRON',
+                        'is_bool' => true,
+                        'values' => array(
+                            array('id' => 'cron_on', 'value' => 1, 'label' => $this->l('Да')),
+                            array('id' => 'cron_off', 'value' => 0, 'label' => $this->l('Нет'))
+                        )
+                    ),
+                    array(
+                        'type' => 'text',
+                        'label' => $this->l('Интервал синхронизации (минуты)'),
+                        'name' => 'ACCUPOS_CRON_INTERVAL_MINUTES',
+                        'desc' => $this->l('Например: 5 или 10. Используется в режиме "Текущий день". В режиме "Предыдущий день (legacy)" интервал игнорируется.'),
+                        'required' => true
+                    ),
+                    array(
+                        'type' => 'text',
+                        'label' => $this->l('Время запуска (HH:MM)'),
+                        'name' => 'ACCUPOS_CRON_TIME',
+                        'desc' => $this->l('Используется только в режиме "Предыдущий день (legacy)". Например: 02:30. Часовой пояс — как у cron на сервере.'),
+                        'required' => false
+                    ),
+                    array(
+                        'type' => 'select',
+                        'label' => $this->l('Режим синхронизации для CRON'),
+                        'name' => 'ACCUPOS_CRON_SYNC_MODE',
+                        'options' => array(
+                            'query' => array(
+                                array('id' => 'today', 'name' => $this->l('Текущий день (рекомендуется)')),
+                                array('id' => 'yesterday', 'name' => $this->l('Предыдущий день (legacy)')),
+                            ),
+                            'id' => 'id',
+                            'name' => 'name'
+                        ),
+                        'desc' => $this->l('Для предотвращения продаж "в минус" включайте текущий день.'),
+                    ),
+                    array(
+                        'type' => 'html',
+                        'name' => '',
+                        'html_content' =>
+                            '<p><b>' . $this->l('Строки для root crontab') . ':</b><br>' .
+                            '<pre style="white-space:pre-wrap;word-break:break-word;"><code>' .
+                            Tools::safeOutput($cronDispatcherLine) . "\n" .
+                            Tools::safeOutput($cronWorkerLine) .
+                            '</code></pre>' .
+                            '<small>' . $this->l('Файл на DigitalOcean: /var/spool/cron/crontabs/root') . '</small></p>' .
+                            '<div class="alert alert-info" style="margin-top:10px;">' .
+                                '<b>' . $this->l('Важно:') . '</b> ' .
+                                $this->l('в режиме "Предыдущий день (legacy)" синхронизация запускается 1 раз в сутки по времени "Время запуска (HH:MM)". В режиме "Текущий день" используется интервал (минуты).') .
+                            '</div>' .
+                            '<script>(function(){\n' .
+                                'function qs(sel){return document.querySelector(sel);} \n' .
+                                'function toggle(){\n' .
+                                    'var modeSel=qs(\"select[name=ACCUPOS_CRON_SYNC_MODE]\");\n' .
+                                    'if(!modeSel) return;\n' .
+                                    'var mode=modeSel.value;\n' .
+                                    'var interval=qs(\"input[name=ACCUPOS_CRON_INTERVAL_MINUTES]\");\n' .
+                                    'var time=qs(\"input[name=ACCUPOS_CRON_TIME]\");\n' .
+                                    'var intervalGroup=interval && interval.closest ? interval.closest(\".form-group\") : null;\n' .
+                                    'var timeGroup=time && time.closest ? time.closest(\".form-group\") : null;\n' .
+                                    'if (mode === \"yesterday\") {\n' .
+                                        'if (timeGroup) timeGroup.style.display = \"\";\n' .
+                                        'if (interval) interval.disabled = true;\n' .
+                                        'if (intervalGroup) intervalGroup.classList.add(\"text-muted\");\n' .
+                                    '} else {\n' .
+                                        'if (timeGroup) timeGroup.style.display = \"none\";\n' .
+                                        'if (interval) interval.disabled = false;\n' .
+                                        'if (intervalGroup) intervalGroup.classList.remove(\"text-muted\");\n' .
+                                    '}\n' .
+                                '}\n' .
+                                'document.addEventListener(\"DOMContentLoaded\", function(){\n' .
+                                    'toggle();\n' .
+                                    'var modeSel=qs(\"select[name=ACCUPOS_CRON_SYNC_MODE]\");\n' .
+                                    'if(modeSel){modeSel.addEventListener(\"change\", toggle);} \n' .
+                                '});\n' .
+                            '})();</script>'
+                    ),
+                ),
+                'submit' => array(
+                    'title' => $this->l('Сохранить расписание'),
+                    'class' => 'btn btn-default pull-right'
+                ),
+            )
+        );
+
+        $helper = new HelperForm();
+        $helper->module = $this;
+        $helper->name_controller = $this->name;
+        $helper->token = Tools::getAdminTokenLite('AdminModules');
+        $helper->currentIndex = AdminController::$currentIndex . '&configure=' . $this->name;
+        $helper->submit_action = 'submitAccuPosCron';
+        $helper->default_form_language = (int)Configuration::get('PS_LANG_DEFAULT');
+
+        $helper->fields_value['ACCUPOS_ENABLE_CRON'] = (int)Configuration::get('ACCUPOS_ENABLE_CRON');
+        $helper->fields_value['ACCUPOS_CRON_INTERVAL_MINUTES'] = (int)Configuration::get('ACCUPOS_CRON_INTERVAL_MINUTES', 10);
+        $helper->fields_value['ACCUPOS_CRON_SYNC_MODE'] = (string)Configuration::get('ACCUPOS_CRON_SYNC_MODE', 'today');
+        $helper->fields_value['ACCUPOS_CRON_TIME'] = (string)Configuration::get('ACCUPOS_CRON_TIME', '02:00');
 
         return $helper->generateForm(array($fields_form));
     }
@@ -671,8 +1810,9 @@ class AccuPos_Sync extends Module
         try {
             $sync = new AccuPosSync();
             
-            // 🕐 CRON СИНХРОНИЗАЦИЯ: только вчерашний день (00:00 - 23:59)
-            $sync->setCronSyncMode();
+            // 🕐 CRON СИНХРОНИЗАЦИЯ: режим настраивается в админке (по умолчанию текущий день)
+            $mode = (string)Configuration::get('ACCUPOS_CRON_SYNC_MODE', 'today');
+            $sync->setCronSyncMode($mode);
             
             return $sync->sync();
         } catch (Exception $e) {
@@ -696,7 +1836,7 @@ class AccuPos_Sync extends Module
      */
     private function processAddTerminal()
     {
-        $terminalId = Tools::getValue('terminal_id');
+        $terminalId = trim((string)Tools::getValue('terminal_id'));
         $warehouseId = Tools::getValue('warehouse_id');
         $storeName = Tools::getValue('store_name');
         $active = Tools::getValue('active') ? 1 : 0;
@@ -792,6 +1932,13 @@ class AccuPos_Sync extends Module
     {
         $output = '';
 
+        // Важно: всегда используем "чистый" action для формы добавления, чтобы
+        // остаточные GET-параметры (например deleteTerminal=1) не выполнялись повторно при POST.
+        $cleanSettingsUrl = AdminController::$currentIndex
+            . '&configure=' . $this->name
+            . '&token=' . Tools::getAdminTokenLite('AdminModules')
+            . '&accupos_tab=settings';
+
         // Заголовок секции
         $output .= '<div class="panel" style="margin-top: 20px;">';
         $output .= '<div class="panel-heading">';
@@ -801,7 +1948,7 @@ class AccuPos_Sync extends Module
         // Форма добавления терминала
         $output .= '<div class="panel-body">';
         $output .= '<h4>' . $this->l('Добавить новый терминал') . '</h4>';
-        $output .= '<form method="post" class="form-horizontal">';
+        $output .= '<form method="post" action="' . Tools::safeOutput($cleanSettingsUrl) . '" class="form-horizontal">';
         
         $output .= '<div class="form-group">';
         $output .= '<label class="control-label col-lg-3">' . $this->l('LocationCode (Terminal ID)') . '</label>';
@@ -921,7 +2068,7 @@ class AccuPos_Sync extends Module
                 if ($terminal['active']) {
                     $output .= sprintf(
                         '<a href="%s&toggleTerminal=1&terminal_id=%s&action=deactivate" class="btn btn-default btn-xs" title="%s">',
-                        AdminController::$currentIndex . '&configure=' . $this->name . '&token=' . Tools::getAdminTokenLite('AdminModules'),
+                        AdminController::$currentIndex . '&configure=' . $this->name . '&token=' . Tools::getAdminTokenLite('AdminModules') . '&accupos_tab=settings',
                         urlencode($terminal['terminal_id']),
                         $this->l('Деактивировать')
                     );
@@ -930,7 +2077,7 @@ class AccuPos_Sync extends Module
                 } else {
                     $output .= sprintf(
                         '<a href="%s&toggleTerminal=1&terminal_id=%s&action=activate" class="btn btn-default btn-xs" title="%s">',
-                        AdminController::$currentIndex . '&configure=' . $this->name . '&token=' . Tools::getAdminTokenLite('AdminModules'),
+                        AdminController::$currentIndex . '&configure=' . $this->name . '&token=' . Tools::getAdminTokenLite('AdminModules') . '&accupos_tab=settings',
                         urlencode($terminal['terminal_id']),
                         $this->l('Активировать')
                     );
@@ -941,7 +2088,7 @@ class AccuPos_Sync extends Module
                 // Кнопка удаления
                 $output .= sprintf(
                     '<a href="%s&deleteTerminal=1&terminal_id=%s" class="btn btn-danger btn-xs" onclick="return confirm(\'%s\');" title="%s">',
-                    AdminController::$currentIndex . '&configure=' . $this->name . '&token=' . Tools::getAdminTokenLite('AdminModules'),
+                    AdminController::$currentIndex . '&configure=' . $this->name . '&token=' . Tools::getAdminTokenLite('AdminModules') . '&accupos_tab=settings',
                     urlencode($terminal['terminal_id']),
                     $this->l('Вы уверены, что хотите удалить этот терминал?'),
                     $this->l('Удалить')
@@ -1138,7 +2285,8 @@ class AccuPos_Sync extends Module
         $output = '';
         
         // Получение параметров из GET
-        $showPeriod = Tools::getValue('show_period', 'yesterday'); // 'today' или 'yesterday'
+        // По умолчанию показываем текущий день (актуально для работы в течение дня)
+        $showPeriod = Tools::getValue('show_period', 'today'); // 'today' или 'yesterday'
         $statusFilter = Tools::getValue('status_filter', 'failed');
         $page = (int)Tools::getValue('page', 1);
         $perPage = 20;

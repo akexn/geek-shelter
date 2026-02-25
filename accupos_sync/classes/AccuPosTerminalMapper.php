@@ -20,6 +20,23 @@ if (!defined('_PS_VERSION_')) {
 class AccuPosTerminalMapper
 {
     /**
+     * Проверить существование терминала в таблице маппинга
+     *
+     * @param string $terminal_id
+     * @return bool
+     */
+    private static function terminalExists($terminal_id)
+    {
+        $terminal_id = (string)$terminal_id;
+        if ($terminal_id === '') {
+            return false;
+        }
+        $id = (int)Db::getInstance()->getValue(
+            'SELECT id FROM ' . _DB_PREFIX_ . 'accupos_terminals WHERE terminal_id = \'' . pSQL($terminal_id) . '\''
+        );
+        return $id > 0;
+    }
+    /**
      * Получить ID склада по ID терминала
      * 
      * @param string $terminal_id Идентификатор терминала AccuPOS
@@ -125,6 +142,9 @@ class AccuPosTerminalMapper
      */
     public static function removeTerminal($terminal_id)
     {
+        if (!self::terminalExists($terminal_id)) {
+            return false;
+        }
         return Db::getInstance()->delete(
             'accupos_terminals',
             'terminal_id = \'' . pSQL($terminal_id) . '\''
@@ -160,6 +180,9 @@ class AccuPosTerminalMapper
      */
     public static function deactivateTerminal($terminal_id)
     {
+        if (!self::terminalExists($terminal_id)) {
+            return false;
+        }
         return Db::getInstance()->update(
             'accupos_terminals',
             array(
@@ -178,6 +201,9 @@ class AccuPosTerminalMapper
      */
     public static function activateTerminal($terminal_id)
     {
+        if (!self::terminalExists($terminal_id)) {
+            return false;
+        }
         return Db::getInstance()->update(
             'accupos_terminals',
             array(

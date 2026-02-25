@@ -343,8 +343,9 @@ class AccuPosLogger
         // Генерация отчёта
         $report = $this->generateDailyReport($date);
 
-        // Если нет ошибок - не отправляем отчёт
+        // Если нет ошибок - не отправляем отчёт (это именно "отчёт об ошибках")
         if ($report['total_errors'] == 0) {
+            $this->logToFile('INFO', 'Daily report not sent: no errors for date ' . $report['date']);
             return true;
         }
 
@@ -369,16 +370,20 @@ class AccuPosLogger
             $csvFile = $this->saveReportAsCsv($report);
         }
 
-        // Формирование email
-        $subject = sprintf('AccuPOS Sync - Ежедневный отчёт об ошибках (%s)', date('d.m.Y', strtotime($report['date'])));
+        // Формирование email (переводим тему под язык по умолчанию PrestaShop)
+        $idLang = (int) Configuration::get('PS_LANG_DEFAULT');
+        $subject = sprintf(
+            $this->t('AccuPOS Sync - Ежедневный отчёт об ошибках (%s)', $idLang),
+            date('d.m.Y', strtotime($report['date']))
+        );
         $htmlContent = $this->generateEmailHtml($report);
 
         // Отправка email через PrestaShop Mail API
         try {
-            $attachments = array();
-            
+            $fileAttachment = null;
             if ($csvFile && file_exists($csvFile)) {
-                $attachments[] = array(
+                // PrestaShop ожидает массив вложений, а не путь к файлу
+                $fileAttachment = array(
                     'content' => file_get_contents($csvFile),
                     'name' => basename($csvFile),
                     'mime' => 'text/csv'
@@ -395,7 +400,7 @@ class AccuPosLogger
                 null,
                 null,
                 null,
-                $csvFile ? $csvFile : null, // attachment
+                $fileAttachment, // attachment
                 null,
                 _PS_MODULE_DIR_ . 'accupos_sync/mails/',
                 false,
@@ -417,6 +422,7 @@ class AccuPosLogger
                     null,
                     'AccuPosLogger'
                 );
+                $this->logToFile('ERROR', 'Mail::send returned false for daily report to ' . $adminEmail);
                 return false;
             }
 
@@ -427,6 +433,60 @@ class AccuPosLogger
                 null,
                 'AccuPosLogger'
             );
+            $this->logToFile('FATAL', 'Mail::send exception: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Тестовая отправка email (без условий по ошибкам)
+     *
+     * @return bool
+     */
+    public function sendTestEmail()
+    {
+        if (!Configuration::get('ACCUPOS_ENABLE_REPORTS')) {
+            return false;
+        }
+
+        $adminEmail = (string)Configuration::get('ACCUPOS_ADMIN_EMAIL');
+        if (empty($adminEmail) || !Validate::isEmail($adminEmail)) {
+            $this->logToFile('ERROR', 'Test email not sent: ACCUPOS_ADMIN_EMAIL is empty/invalid');
+            return false;
+        }
+
+        $idLang = (int) Configuration::get('PS_LANG_DEFAULT');
+        $subject = $this->t('AccuPOS Sync - Тестовое письмо', $idLang);
+        $htmlContent = '<p>' . $this->t('Это тестовое письмо модуля <b>AccuPOS Sync</b>.', $idLang) . '</p>'
+            . '<p>' . $this->t('Если вы получили это письмо — отправка email из PrestaShop работает.', $idLang) . '</p>'
+            . '<p><small>' . $this->t('Время:', $idLang) . ' ' . date('Y-m-d H:i:s') . '</small></p>';
+
+        try {
+            $sent = Mail::send(
+                (int)Configuration::get('PS_LANG_DEFAULT'),
+                'accupos_report',
+                $subject,
+                array('{message}' => $htmlContent),
+                $adminEmail,
+                null,
+                null,
+                null,
+                null,
+                null,
+                _PS_MODULE_DIR_ . 'accupos_sync/mails/',
+                false,
+                null
+            );
+
+            if ($sent) {
+                $this->logToFile('INFO', 'Test email sent to ' . $adminEmail);
+                return true;
+            }
+
+            $this->logToFile('ERROR', 'Test email failed: Mail::send returned false');
+            return false;
+        } catch (Exception $e) {
+            $this->logToFile('FATAL', 'Test email exception: ' . $e->getMessage());
             return false;
         }
     }
@@ -464,6 +524,27 @@ class AccuPosLogger
         ');
 
         return $deleted;
+    }
+
+    /**
+     * Перевод строк для классов модуля (когда $this->l() недоступен).
+     *
+     * @param string $string
+     * @param int $idLang
+     * @return string
+     */
+    private function t($string, $idLang)
+    {
+        try {
+            $module = Module::getInstanceByName('accupos_sync');
+            if ($module instanceof Module) {
+                return $module->l($string, 'accuposlogger', (int) $idLang);
+            }
+        } catch (Exception $e) {
+            // Игнорируем: fallback на исходную строку
+        }
+
+        return (string) $string;
     }
 }
 

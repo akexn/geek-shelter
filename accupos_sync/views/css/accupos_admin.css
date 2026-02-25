@@ -219,6 +219,188 @@
 }
 
 /* ========================================
+   Инвентаризация + печать
+   ======================================== */
+
+.accupos-row-exclude {
+    background: #f2f2f2; /* light gray */
+}
+
+/* В админке PrestaShop фон часто задаётся на ячейки, поэтому красим и td */
+.accupos-row-exclude > td,
+.accupos-row-exclude td {
+    background: #f2f2f2 !important;
+}
+
+@media print {
+    .accupos-no-print,
+    .page-head,
+    .header-toolbar,
+    .nav-sidebar,
+    .nav-tabs,
+    .breadcrumb,
+    .panel-heading .pull-right {
+        display: none !important;
+    }
+
+    .accupos-inventory-report {
+        margin-top: 0 !important;
+    }
+}
+
+/* Контейнер для печати (создаётся JS) */
+#accupos-print-root {
+    display: none;
+}
+
+/* Печать только отчёта: добавляем класс на <html> перед window.print() */
+@media print {
+    /* показываем только #accupos-print-root, остальное скрываем полностью (без пустых страниц) */
+    html.accupos-print-inventory body > * {
+        display: none !important;
+    }
+
+    html.accupos-print-inventory #accupos-print-root {
+        display: block !important;
+        /* ВАЖНО: НЕ fixed — иначе браузер может напечатать только "первый экран" */
+        position: static !important;
+        left: auto !important;
+        top: auto !important;
+        width: auto !important;
+        height: auto !important;
+        overflow: visible !important;
+        background: #fff;
+    }
+}
+
+/* Только для печати (скрыто на экране) */
+.accupos-only-print {
+    display: none;
+}
+
+@media print {
+    /* Ландшафт + аккуратные поля */
+    @page {
+        size: A4 landscape;
+        margin: 10mm;
+    }
+
+    html, body {
+        height: auto !important;
+    }
+
+    body {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    /* Подсветка исключений в печати (серый фон) */
+    html.accupos-print-inventory #accupos-print-root .accupos-row-exclude td {
+        background: #f2f2f2 !important;
+    }
+
+    /* По умолчанию показываем печатные блоки */
+    html.accupos-print-inventory .accupos-only-print {
+        display: block !important;
+    }
+
+    /* Но внутри таблиц элементы должны оставаться table-cell, иначе сломается разметка */
+    html.accupos-print-inventory table .accupos-only-print,
+    html.accupos-print-inventory thead .accupos-only-print,
+    html.accupos-print-inventory tbody .accupos-only-print,
+    html.accupos-print-inventory tfoot .accupos-only-print {
+        display: table-cell !important;
+    }
+
+    html.accupos-print-inventory .accupos-print-header {
+        margin: 0 0 8mm 0;
+    }
+
+    html.accupos-print-inventory .accupos-print-title {
+        font-size: 16px;
+        font-weight: 700;
+        margin-bottom: 2mm;
+    }
+
+    html.accupos-print-inventory .accupos-print-subtitle {
+        font-size: 11px;
+        color: #444;
+    }
+
+    /* В печати table-responsive может обрезать колонки */
+    html.accupos-print-inventory #accupos-print-root .table-responsive {
+        overflow: visible !important;
+    }
+
+    /* Таблица: компактно и без обрезаний */
+    html.accupos-print-inventory #accupos-print-root table {
+        width: 100% !important;
+        border-collapse: collapse !important;
+        font-size: 10px !important;
+    }
+
+    html.accupos-print-inventory #accupos-print-root th,
+    html.accupos-print-inventory #accupos-print-root td {
+        padding: 4px 6px !important;
+        vertical-align: top !important;
+    }
+
+    /* Разделители между товарами (строками): пунктирная линия */
+    html.accupos-print-inventory #accupos-print-root tbody tr td {
+        border-bottom: 1px dashed #777 !important;
+    }
+    html.accupos-print-inventory #accupos-print-root tbody tr:last-child td {
+        border-bottom: 1px solid #777 !important;
+    }
+
+    /* Повтор заголовка таблицы на каждой странице */
+    html.accupos-print-inventory #accupos-print-root thead {
+        display: table-header-group;
+    }
+
+    html.accupos-print-inventory #accupos-print-root tr {
+        page-break-inside: avoid;
+    }
+
+    /* Не печатаем UI-стрелки сортировки */
+    html.accupos-print-inventory .accupos-sort-asc:after,
+    html.accupos-print-inventory .accupos-sort-desc:after {
+        content: "" !important;
+    }
+
+    /* Числа по складам не переносим */
+    html.accupos-print-inventory #accupos-print-root td.text-center {
+        white-space: nowrap;
+    }
+
+    /* Квадратики для галочек (печать) */
+    html.accupos-print-inventory #accupos-print-root .accupos-check-cell {
+        text-align: center;
+        vertical-align: middle !important;
+    }
+
+    html.accupos-print-inventory #accupos-print-root .accupos-check-square {
+        display: inline-block;
+        width: 6mm;
+        height: 6mm;
+        border: 1px solid #000;
+        box-sizing: border-box;
+    }
+}
+
+/* Индикаторы сортировки */
+.accupos-sort-asc:after {
+    content: " ▲";
+    font-size: 11px;
+    color: #666;
+}
+.accupos-sort-desc:after {
+    content: " ▼";
+    font-size: 11px;
+    color: #666;
+}
+
+/* ========================================
    Анимация загрузки
    ======================================== */
 
